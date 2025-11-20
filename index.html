@@ -310,6 +310,15 @@
 
         // --- NETWORK GLOBAL STATE ---
         const APP_PREFIX = 'blox-p2p-2025-'; 
+        
+        // Generate a simple random ID for game entities
+        function generateId() {
+            return Math.random().toString(36).substr(2, 9);
+        }
+        
+        // Create a unique ID for this session (Server Mode Identity)
+        const localSessionId = 'user-' + generateId();
+
         const NetState = {
             mode: 'none', // 'p2p-host', 'p2p-client', 'server'
             isHost: false,
@@ -335,11 +344,6 @@
         const msgEl = document.getElementById('connection-msg');
         const hudEl = document.getElementById('room-hud');
         const codeEl = document.getElementById('room-code-display');
-
-        // Generate a simple random ID for game entities
-        function generateId() {
-            return Math.random().toString(36).substr(2, 9);
-        }
 
         function initGame(displayText) {
             document.getElementById('login-screen').style.display = 'none';
@@ -796,9 +800,13 @@
         
         // --- Network Game Sync ---
         function sendPlayerUpdate() {
+            // Determine proper ID based on mode
+            const myId = (NetState.mode === 'server') ? localSessionId : (NetState.peer?.id);
+            if (!myId) return; // Not ready
+
             const data = {
                 type: 'PLAYER_UPDATE',
-                id: (NetState.peer && NetState.peer.id) ? NetState.peer.id : 'server-client',
+                id: myId,
                 x: playerGroup.position.x,
                 y: playerGroup.position.y,
                 z: playerGroup.position.z,
@@ -821,8 +829,9 @@
         }
 
         function updateRemotePlayer(id, data) {
-            if (NetState.peer && id === NetState.peer.id) return;
-            if (NetState.mode === 'server' && id === 'server-client') return; // Don't process own echo
+            // Ignore own updates based on mode
+            const myId = (NetState.mode === 'server') ? localSessionId : (NetState.peer?.id);
+            if (id === myId) return;
 
             let p = remotePlayers[id];
             if (!p) {
