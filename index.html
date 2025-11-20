@@ -272,6 +272,33 @@
             code: null
         };
 
+        // FIX: Added OpenRelay (Public TURN) servers to bypass strict firewalls
+        const peerConfig = {
+            config: {
+                iceServers: [
+                    // Google Public STUN
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    // OpenRelay Public TURN (The "Public One")
+                    {
+                        urls: "turn:openrelay.metered.ca:80",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    }
+                ]
+            }
+        };
+
         let localPlayerName = "Guest";
         let isGameActive = false;
         const remotePlayers = {}; 
@@ -374,7 +401,8 @@
              const code = Math.floor(100000 + Math.random() * 900000).toString();
              NetState.code = code;
              
-             NetState.peer = new window.Peer(APP_PREFIX + code);
+             // FIX: Pass peerConfig to Host
+             NetState.peer = new window.Peer(APP_PREFIX + code, peerConfig);
              
              NetState.peer.on('error', (err) => {
                  if(err.type === 'unavailable-id') {
@@ -467,7 +495,8 @@
             NetState.code = codeInput;
             statusEl.textContent = "Connecting to " + codeInput;
             
-            NetState.peer = new window.Peer(); // Auto ID for client is fine
+            // FIX: Pass peerConfig to Client (undefined ID lets PeerJS generate one)
+            NetState.peer = new window.Peer(undefined, peerConfig); 
             
             NetState.peer.on('open', (id) => {
                 const hostId = APP_PREFIX + codeInput;
@@ -490,13 +519,13 @@
                     msgEl.textContent = "Connection Failed. Check Code.";
                 });
                 
-                // Fallback timeout
+                // Fallback timeout - Increased to 10s for slow STUN negotiation
                 setTimeout(() => {
                     if(!NetState.conn.open) {
                         msgEl.style.display = 'block';
-                        msgEl.textContent = "Connecting taking too long...";
+                        msgEl.textContent = "Connection timed out. (Are you on a restricted network?)";
                     }
-                }, 5000);
+                }, 10000);
             });
         });
 
