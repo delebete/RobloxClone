@@ -195,7 +195,14 @@
         import { getFirestore, collection, doc, setDoc, addDoc, onSnapshot, deleteDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 
         // --- Firebase Setup ---
-        const firebaseConfig = JSON.parse(__firebase_config);
+        const firebaseConfig = {
+          apiKey: "AIzaSyCzUQXDXgsNt1QZqqeoNDQ4PBfQNjnS_Ag",
+          authDomain: "robloxclone-d2bd3.firebaseapp.com",
+          projectId: "robloxclone-d2bd3",
+          storageBucket: "robloxclone-d2bd3.firebasestorage.app",
+          messagingSenderId: "346879775122",
+          appId: "1:346879775122:web:4c0cd9ecfc0d540b41314b"
+        }
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
