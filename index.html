@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roblox-Style Multiplayer</title>
+    <title>Roblox-Style P2P Multiplayer</title>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <style>
         body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #232527; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -16,6 +17,16 @@
             white-space: pre-wrap;
         }
 
+        /* Room Code HUD */
+        #room-hud {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.6); padding: 10px 20px; border-radius: 20px;
+            color: white; font-weight: bold; font-size: 16px; pointer-events: none;
+            z-index: 100; display: none; border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        #room-hud span { color: #00ffaa; font-family: monospace; font-size: 18px; margin-left: 5px; }
+
         /* Login Modal */
         #login-screen {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -23,19 +34,34 @@
         }
         .login-box {
             background: #393b3d; padding: 40px; border-radius: 10px; text-align: center;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 300px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 320px;
         }
-        .login-box h1 { color: white; margin-top: 0; }
-        .login-box input {
-            width: 100%; padding: 10px; margin: 15px 0; border-radius: 5px; border: 1px solid #555;
-            background: #232527; color: white; font-size: 16px; box-sizing: border-box;
-        }
-        .login-btn {
-            width: 100%; padding: 12px; background: #00a2ff; color: white; border: none;
-            border-radius: 5px; font-size: 16px; font-weight: bold; cursor: pointer;
-        }
-        .login-btn:hover { background: #008ecc; }
+        .login-box h1 { color: white; margin-top: 0; margin-bottom: 5px;}
+        .login-box p { color: #aaa; font-size: 12px; margin-bottom: 20px; }
         
+        .input-group { margin-bottom: 15px; text-align: left; }
+        .input-group label { display: block; color: #ccc; margin-bottom: 5px; font-size: 12px; }
+        .login-box input {
+            width: 100%; padding: 10px; border-radius: 5px; border: 1px solid #555;
+            background: #232527; color: white; font-size: 14px; box-sizing: border-box;
+        }
+        
+        .btn-row { display: flex; gap: 10px; margin-top: 10px; }
+        .btn-primary {
+            flex: 1; padding: 12px; background: #00a2ff; color: white; border: none;
+            border-radius: 5px; font-size: 14px; font-weight: bold; cursor: pointer;
+        }
+        .btn-primary:hover { background: #008ecc; }
+        .btn-secondary {
+            flex: 1; padding: 12px; background: #444; color: white; border: 1px solid #555;
+            border-radius: 5px; font-size: 14px; font-weight: bold; cursor: pointer;
+        }
+        .btn-secondary:hover { background: #555; }
+        
+        #host-id-display-container { display: none; margin-top: 15px; background: #222; padding: 15px; border-radius: 5px; border: 1px solid #444; }
+        #host-id-text { color: #00ffaa; font-family: monospace; font-size: 24px; letter-spacing: 2px; font-weight: bold; margin: 5px 0; }
+        #copy-btn { margin-top: 5px; background: #333; color: white; border: none; padding: 5px 10px; cursor: pointer; font-size: 10px; border-radius: 3px; }
+
         #network-status { position: absolute; bottom: 10px; left: 10px; color: #888; font-size: 12px; pointer-events: none; z-index: 201; }
 
         /* Game UI */
@@ -47,10 +73,10 @@
         
         /* Tools UI */
         #editor-ui {
-            position: absolute; top: 20px; right: 20px; width: 240px;
+            position: absolute; top: 60px; right: 20px; width: 240px; /* Moved down slightly */
             background: rgba(35, 37, 39, 0.95); color: white; padding: 15px;
             border-radius: 8px; border: 1px solid #444; display: none;
-            max-height: calc(100vh - 100px); overflow-y: auto; z-index: 90;
+            max-height: calc(100vh - 140px); overflow-y: auto; z-index: 90;
         }
         
         #toggle-editor-btn {
@@ -58,6 +84,7 @@
             background: #00a2ff; color: white; border: none; border-radius: 4px;
             font-weight: bold; cursor: pointer; font-size: 16px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3); pointer-events: auto; z-index: 100; 
+            display: none;
         }
         #toggle-editor-btn:hover { background: #008ecc; }
 
@@ -71,7 +98,6 @@
         button.tool-btn { flex: 1; padding: 5px; background: #444; border: 1px solid #555; color: white; cursor: pointer; border-radius: 3px; }
         button.tool-btn:hover { background: #555; }
         button.tool-btn.active { background: #00a2ff; border-color: #00a2ff; }
-        button.undo-btn { width: 100%; padding: 8px; background: #f39c12; color: white; border: none; border-radius: 3px; cursor: pointer; margin-bottom: 10px; font-weight: bold; }
         .checkbox-row { display: flex; align-items: center; gap: 10px; margin: 5px 0; background: #333; padding: 5px; border-radius: 4px; }
         input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; }
         select, input[type="color"] { width: 100%; padding: 5px; background: #333; border: 1px solid #555; color: white; border-radius: 3px; margin-bottom: 5px; pointer-events: auto; }
@@ -94,10 +120,7 @@
         {
             "imports": {
                 "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-                "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
-                "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
-                "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
             }
         }
     </script>
@@ -107,20 +130,47 @@
     <!-- Login Screen -->
     <div id="login-screen">
         <div class="login-box">
-            <h1>Blox World</h1>
-            <input type="text" id="username-input" placeholder="Enter Username" maxlength="12">
-            <button class="login-btn" id="join-btn">Join Game</button>
-            <p id="connection-msg" style="color:#888; font-size:12px; margin-top:10px;"></p>
+            <h1>Blox World P2P</h1>
+            <p>Peer-to-Peer Multiplayer</p>
+            
+            <div class="input-group">
+                <label>Username</label>
+                <input type="text" id="username-input" placeholder="Your Name" maxlength="12" value="Guest">
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-secondary" id="host-btn">Host Game</button>
+            </div>
+
+            <div style="margin: 15px 0; border-bottom: 1px solid #555; position: relative;">
+                <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: #393b3d; padding: 0 10px; color: #888; font-size: 12px;">OR JOIN</span>
+            </div>
+
+            <div class="input-group">
+                <label>Room Code (6 Digits)</label>
+                <input type="text" id="host-id-input" placeholder="e.g. 123456" maxlength="6" style="letter-spacing: 2px; font-family: monospace;">
+            </div>
+            
+            <button class="btn-primary" id="join-btn">Join Game</button>
+            
+            <div id="host-id-display-container">
+                <div style="font-size: 12px; color: #ccc; margin-bottom: 5px;">Share this Code:</div>
+                <div id="host-id-text">...</div>
+                <button id="copy-btn">Copy to Clipboard</button>
+            </div>
+            
+            <p id="connection-msg" style="color:#ff4444; font-size:12px; margin-top:10px; display:none;"></p>
         </div>
     </div>
 
-    <div id="network-status">Initializing...</div>
-    <div id="debug-console">System Ready...</div>
+    <div id="room-hud">ROOM CODE: <span id="room-code-display"></span></div>
+    <div id="network-status">Idle</div>
+    <div id="debug-console">P2P System Ready...</div>
 
     <div id="crosshair"></div>
 
     <div id="ui-layer">
-        <h1>Baseplate Demo</h1>
+        <h1>P2P Demo</h1>
         <p><span class="key">W</span> <span class="key">A</span> <span class="key">S</span> <span class="key">D</span> to Walk</p>
         <p><span class="key">Space</span> to Jump</p>
         <p><span class="key">Shift</span> Toggle Shift Lock</p>
@@ -131,14 +181,13 @@
         </div>
     </div>
 
-    <button id="toggle-editor-btn" style="display:none;">Open Tools</button>
+    <button id="toggle-editor-btn">Open Tools</button>
 
     <div id="editor-ui">
         <div class="tab-row">
             <button class="tab-btn active" id="tab-avatar" onclick="window.gameEditor.setTab('avatar')">Avatar</button>
             <button class="tab-btn" id="tab-world" onclick="window.gameEditor.setTab('world')">Building</button>
         </div>
-        <button class="undo-btn" onclick="window.gameEditor.undo()">↩ Undo Action</button>
         
         <div id="content-avatar">
             <div class="editor-section">
@@ -167,7 +216,7 @@
                     <button class="tool-btn" onclick="window.gameEditor.addWorldPart('cylinder')">Cylinder</button>
                 </div>
                 <div class="editor-row">
-                     <button class="tool-btn" onclick="window.gameEditor.addWorldPart('wedge')">Wedge</button>
+                      <button class="tool-btn" onclick="window.gameEditor.addWorldPart('wedge')">Wedge</button>
                 </div>
             </div>
             <div class="editor-section">
@@ -204,9 +253,6 @@
     <script type="module">
         import * as THREE from 'three';
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
-        import { initializeApp } from 'firebase/app';
-        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, collection, doc, setDoc, addDoc, onSnapshot, deleteDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 
         // --- Debug Logger ---
         function log(msg) {
@@ -216,39 +262,249 @@
             console.log(msg);
         }
 
-        // --- FIREBASE CONFIGURATION ---
-        const firebaseConfig = {
-          apiKey: "AIzaSyCzUQXDXgsNt1QZqqeoNDQ4PBfQNjnS_Ag",
-          authDomain: "robloxclone-d2bd3.firebaseapp.com",
-          projectId: "robloxclone-d2bd3",
-          storageBucket: "robloxclone-d2bd3.firebasestorage.app",
-          messagingSenderId: "346879775122",
-          appId: "1:346879775122:web:4c0cd9ecfc0d540b41314b"
+        // --- NETWORK GLOBAL STATE ---
+        const APP_PREFIX = 'blox-p2p-2025-'; // Unique prefix for this app
+        const NetState = {
+            isHost: false,
+            peer: null,
+            conn: null, // Client connection to host
+            connections: [], // Host connections to clients
+            code: null
         };
 
-        // --- INIT FIREBASE ---
-        let app, auth, db;
-        let isOffline = false;
-
-        try {
-            app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
-            document.getElementById('network-status').textContent = "Connecting to Server...";
-            log("Firebase Initialized. Waiting for Auth...");
-        } catch (e) {
-            console.error("Firebase Init Error:", e);
-            isOffline = true;
-            document.getElementById('network-status').textContent = "Offline Mode";
-            log("ERROR: Firebase failed to init. " + e.message);
-        }
-
-        // --- Global Game State ---
-        let localPlayerId = null;
         let localPlayerName = "Guest";
         let isGameActive = false;
         const remotePlayers = {}; 
         const worldObjects = {}; 
+
+        // --- P2P CONNECTION LOGIC ---
+        const hostBtn = document.getElementById('host-btn');
+        const joinBtn = document.getElementById('join-btn');
+        const statusEl = document.getElementById('network-status');
+        const msgEl = document.getElementById('connection-msg');
+        const hudEl = document.getElementById('room-hud');
+        const codeEl = document.getElementById('room-code-display');
+
+        // Generate a simple random ID for game entities
+        function generateId() {
+            return Math.random().toString(36).substr(2, 9);
+        }
+
+        function initGame(code) {
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('toggle-editor-btn').style.display = 'block';
+            hudEl.style.display = 'block';
+            codeEl.textContent = code;
+            isGameActive = true;
+        }
+
+        function handleData(data, senderConn) {
+            // --- PROTOCOL HANDLER ---
+            switch(data.type) {
+                case 'WELCOME':
+                    // Client receives initial state
+                    log(`Connected! Found ${data.players.length} players and ${data.world.length} objects.`);
+                    data.players.forEach(p => updateRemotePlayer(p.id, p));
+                    data.world.forEach(w => spawnRemotePart(w.id, w));
+                    break;
+                    
+                case 'PLAYER_UPDATE':
+                    // Received player movement
+                    if (NetState.isHost) {
+                        // If Host, broadcast to everyone else
+                        NetState.connections.forEach(c => {
+                            if (c.peer !== senderConn.peer) c.send(data);
+                        });
+                    }
+                    updateRemotePlayer(data.id, data);
+                    break;
+
+                case 'PLAYER_LEAVE':
+                    removeRemotePlayer(data.id);
+                    break;
+                    
+                case 'REQ_WORLD_CREATE':
+                    if (NetState.isHost) {
+                        // Host creates the object and broadcasts
+                        const newId = generateId();
+                        const worldData = { ...data.data, id: newId };
+                        spawnRemotePart(newId, worldData); // Local spawn
+                        broadcast({ type: 'WORLD_CREATE', data: worldData });
+                    }
+                    break;
+
+                case 'WORLD_CREATE':
+                    // Client spawns object
+                    spawnRemotePart(data.data.id, data.data);
+                    break;
+
+                case 'REQ_WORLD_UPDATE':
+                    if (NetState.isHost) {
+                        // Host updates authoritative state and broadcasts
+                        updateRemotePart(data.id, data.data);
+                        broadcast({ type: 'WORLD_UPDATE', id: data.id, data: data.data });
+                    }
+                    break;
+
+                case 'WORLD_UPDATE':
+                    updateRemotePart(data.id, data.data);
+                    break;
+                
+                case 'REQ_WORLD_DELETE':
+                    if (NetState.isHost) {
+                        deleteWorldPart(data.id);
+                        broadcast({ type: 'WORLD_DELETE', id: data.id });
+                    }
+                    break;
+
+                case 'WORLD_DELETE':
+                    deleteWorldPart(data.id);
+                    break;
+            }
+        }
+
+        function broadcast(data) {
+            if (!NetState.isHost) return;
+            NetState.connections.forEach(c => c.send(data));
+        }
+
+        // --- HOSTING ---
+        function createHost() {
+             // Generate 6 digit code
+             const code = Math.floor(100000 + Math.random() * 900000).toString();
+             NetState.code = code;
+             
+             NetState.peer = new window.Peer(APP_PREFIX + code);
+             
+             NetState.peer.on('error', (err) => {
+                 if(err.type === 'unavailable-id') {
+                     console.warn("ID Collision, retrying...");
+                     createHost(); // Retry with new code
+                 } else {
+                     console.error(err);
+                     msgEl.textContent = "Connection Error: " + err.type;
+                     msgEl.style.display = 'block';
+                 }
+             });
+
+             NetState.peer.on('open', (id) => {
+                log("Hosting Game. Code: " + code);
+                statusEl.textContent = "Hosting: " + code;
+                document.getElementById('host-id-display-container').style.display = 'block';
+                document.getElementById('host-id-text').textContent = code;
+                hostBtn.disabled = true;
+                joinBtn.disabled = true;
+                initGame(code);
+            });
+
+            NetState.peer.on('connection', (conn) => {
+                log("New Player Connecting...");
+                NetState.connections.push(conn);
+                
+                conn.on('data', (data) => handleData(data, conn));
+                
+                conn.on('open', () => {
+                    // Send Welcome Package
+                    const players = Object.values(remotePlayers).map(p => ({
+                        id: p.id, x: p.group.position.x, y: p.group.position.y, z: p.group.position.z, 
+                        rot: p.group.rotation.y, name: p.currentName
+                    }));
+                    // Include Host
+                    players.push({
+                        id: NetState.peer.id, x: playerGroup.position.x, y: playerGroup.position.y, z: playerGroup.position.z,
+                        rot: playerGroup.rotation.y, name: localPlayerName
+                    });
+                    
+                    const world = Object.values(worldObjects).map(obj => {
+                        return {
+                            id: obj.userData.dbId,
+                            type: obj.userData.type,
+                            px: obj.position.x, py: obj.position.y, pz: obj.position.z,
+                            rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
+                            sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
+                            color: obj.material.color.getHex(),
+                            anchored: obj.userData.anchored,
+                            canCollide: obj.userData.canCollide
+                        };
+                    });
+
+                    conn.send({ type: 'WELCOME', players: players, world: world });
+                });
+
+                conn.on('close', () => {
+                    log("Player Disconnected: " + conn.peer);
+                    
+                    // 1. Remove connection from active list
+                    NetState.connections = NetState.connections.filter(c => c !== conn);
+                    
+                    // 2. Remove the player locally (Host side)
+                    removeRemotePlayer(conn.peer);
+                    
+                    // 3. Tell everyone else to remove this player
+                    broadcast({ type: 'PLAYER_LEAVE', id: conn.peer });
+                });
+            });
+        }
+
+        hostBtn.addEventListener('click', () => {
+            localPlayerName = document.getElementById('username-input').value || "Host";
+            NetState.isHost = true;
+            statusEl.textContent = "Initializing Host...";
+            createHost();
+        });
+
+        // --- JOINING ---
+        joinBtn.addEventListener('click', () => {
+            const codeInput = document.getElementById('host-id-input').value.trim();
+            if (!codeInput || codeInput.length !== 6) {
+                msgEl.textContent = "Please enter a valid 6-digit code.";
+                msgEl.style.display = 'block';
+                return;
+            }
+            
+            localPlayerName = document.getElementById('username-input').value || "Guest";
+            NetState.isHost = false;
+            NetState.code = codeInput;
+            statusEl.textContent = "Connecting to " + codeInput;
+            
+            NetState.peer = new window.Peer(); // Auto ID for client is fine
+            
+            NetState.peer.on('open', (id) => {
+                const hostId = APP_PREFIX + codeInput;
+                NetState.conn = NetState.peer.connect(hostId);
+                
+                NetState.conn.on('open', () => {
+                    log("Connected to Host!");
+                    statusEl.textContent = "Connected to " + codeInput;
+                    initGame(codeInput);
+                });
+                
+                NetState.conn.on('data', (data) => handleData(data, NetState.conn));
+                NetState.conn.on('close', () => {
+                    alert("Host disconnected");
+                    location.reload();
+                });
+                NetState.conn.on('error', (err) => {
+                    console.error(err);
+                    msgEl.style.display = 'block';
+                    msgEl.textContent = "Connection Failed. Check Code.";
+                });
+                
+                // Fallback timeout
+                setTimeout(() => {
+                    if(!NetState.conn.open) {
+                        msgEl.style.display = 'block';
+                        msgEl.textContent = "Connecting taking too long...";
+                    }
+                }, 5000);
+            });
+        });
+
+        document.getElementById('copy-btn').addEventListener('click', () => {
+            navigator.clipboard.writeText(NetState.code);
+            alert("Code Copied!");
+        });
+
 
         // --- Configuration ---
         const COLORS = {
@@ -300,10 +556,10 @@
         const remotePlayersGroup = new THREE.Group();
         scene.add(remotePlayersGroup);
 
-        // --- Camera Variables (Global for hoisting) ---
+        // --- Camera Variables ---
         const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, minDistance: 2, maxDistance: 80, sensitivity: 0.002, offsetY: 4.5 };
 
-        // --- Helper Functions (Hoisted) ---
+        // --- Helper Functions ---
         function updateCameraPosition() {
             cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, cameraParams.targetDistance, 0.2);
             const r = cameraParams.distance, phi = cameraParams.phi, theta = cameraParams.theta;
@@ -316,7 +572,6 @@
             camera.position.set(targetPos.x + x, targetPos.y + y, targetPos.z + z);
             camera.lookAt(targetPos);
 
-            // Simple LOD/Hide check for first person
             let isFirstPerson = false;
             if (cameraParams.distance < 2.5) { isFirstPerson = true; playerGroup.visible = false; } 
             else { isFirstPerson = false; playerGroup.visible = true; }
@@ -404,151 +659,55 @@
         playerGroup.add(localAvatar.group);
         const bodyParts = localAvatar.group.userData.parts; 
         
-        // --- Firebase Logic ---
-        
-        document.getElementById('join-btn').addEventListener('click', async () => {
-            const nameInput = document.getElementById('username-input').value.trim();
-            if (!nameInput) return alert("Please enter a name!");
-            localPlayerName = nameInput;
+        // --- Network Game Sync ---
+        function sendPlayerUpdate() {
+            if (!NetState.peer || !NetState.peer.id) return;
             
-            document.getElementById('login-screen').style.display = 'none';
-            document.getElementById('toggle-editor-btn').style.display = 'block';
-            
-            if (isOffline) {
-                isGameActive = true;
-                localPlayerId = 'offline-user';
-                log("Playing in Offline Mode");
-                return; 
-            }
-
-            try {
-                log("Attempting to sign in...");
-                await signInAnonymously(auth);
-            } catch (e) {
-                console.error("Auth failed, forcing offline:", e);
-                isOffline = true;
-                isGameActive = true; 
-                document.getElementById('network-status').textContent = "Offline (Auth Failed)";
-                log("Auth Failed. Switched to Offline.");
-            }
-        });
-
-        if (!isOffline) {
-            onAuthStateChanged(auth, (user) => {
-                if (user) {
-                    localPlayerId = user.uid;
-                    isGameActive = true;
-                    document.getElementById('network-status').textContent = "Online";
-                    log("Signed in as: " + user.uid);
-                    startPlayerSync();
-                    startWorldSync();
-                }
-            });
-        }
-
-        let lastSyncTime = 0;
-        function syncLocalPlayer() {
-            if (isOffline || !localPlayerId || !isGameActive) return;
-            const now = Date.now();
-            if (now - lastSyncTime < 100) return; 
-            
-            lastSyncTime = now;
-            const playerRef = doc(db, 'players', localPlayerId); 
-            
-            // Catch errors here so we don't crash main loop if permissions fail
-            setDoc(playerRef, {
+            const data = {
+                type: 'PLAYER_UPDATE',
+                id: NetState.peer.id,
                 x: playerGroup.position.x,
                 y: playerGroup.position.y,
                 z: playerGroup.position.z,
                 rot: playerGroup.rotation.y,
-                name: localPlayerName,
-                lastSeen: serverTimestamp()
-            }, { merge: true }).catch(err => {
-                 // Silent fail for sync
-            });
+                name: localPlayerName
+            };
+
+            if (NetState.isHost) broadcast(data);
+            else if (NetState.conn) NetState.conn.send(data);
         }
 
-        function startPlayerSync() {
-            if (isOffline) return;
-            log("Starting Player Sync...");
-            const playersRef = collection(db, 'players'); 
-            onSnapshot(playersRef, (snapshot) => {
-                const currentIds = [];
-                snapshot.forEach((doc) => {
-                    const data = doc.data();
-                    const uid = doc.id;
-                    if (uid === localPlayerId) return; 
-                    
-                    currentIds.push(uid);
-                    
-                    let p = remotePlayers[uid];
-                    
-                    if (!p) {
-                        log("Found new player: " + (data.name || "Guest"));
-                        const remote = createAvatar(false);
-                        remote.group.add(createNameTag(data.name || "Guest"));
-                        remotePlayersGroup.add(remote.group);
-                        remotePlayers[uid] = { 
-                            group: remote.group, 
-                            targetPos: new THREE.Vector3(), 
-                            targetRot: 0,
-                            parts: remote.parts,
-                            lastUpdate: Date.now(),
-                            currentName: data.name || "Guest"
-                        };
-                        p = remotePlayers[uid];
-                    }
-                    
-                    const newName = data.name || "Guest";
-                    if (p.currentName !== newName) {
-                        log(`Player ${uid} changed name to ${newName}`);
-                        const oldTag = p.group.getObjectByName("nametag");
-                        if (oldTag) p.group.remove(oldTag);
-                        p.group.add(createNameTag(newName));
-                        p.currentName = newName;
-                    }
-                    
-                    if (data.x !== undefined) {
-                        p.targetPos.set(data.x, data.y, data.z);
-                        p.targetRot = data.rot;
-                        p.lastUpdate = Date.now(); 
-                    }
-                });
-                
-                Object.keys(remotePlayers).forEach(uid => {
-                    if (!currentIds.includes(uid)) {
-                        log("Player left: " + uid);
-                        remotePlayersGroup.remove(remotePlayers[uid].group);
-                        delete remotePlayers[uid];
-                    }
-                });
-            }, (error) => {
-                log("SYNC ERROR: " + error.message);
-                console.warn("Sync Error:", error);
-            });
+        function updateRemotePlayer(id, data) {
+            if (!NetState.peer || id === NetState.peer.id) return;
+            
+            let p = remotePlayers[id];
+            if (!p) {
+                log("New Player: " + data.name);
+                const remote = createAvatar(false);
+                remote.group.add(createNameTag(data.name));
+                remotePlayersGroup.add(remote.group);
+                p = remotePlayers[id] = {
+                    id: id,
+                    group: remote.group,
+                    targetPos: new THREE.Vector3(data.x, data.y, data.z),
+                    targetRot: data.rot,
+                    parts: remote.parts,
+                    currentName: data.name
+                };
+            }
+            
+            p.targetPos.set(data.x, data.y, data.z);
+            p.targetRot = data.rot;
         }
 
-        function startWorldSync() {
-            if (isOffline) return;
-            log("Starting World Sync...");
-            const worldRef = collection(db, 'worldObjects');
-            onSnapshot(worldRef, (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    const data = change.doc.data();
-                    const id = change.doc.id;
-                    if (change.type === "added") { spawnRemotePart(id, data); }
-                    if (change.type === "modified") updateRemotePart(id, data);
-                    if (change.type === "removed") {
-                        const mesh = worldObjects[id];
-                        if (mesh) {
-                            mesh.parent.remove(mesh);
-                            delete worldObjects[id];
-                        }
-                    }
-                });
-            }, (error) => log("WORLD ERROR: " + error.message));
+        function removeRemotePlayer(id) {
+            if (remotePlayers[id]) {
+                remotePlayersGroup.remove(remotePlayers[id].group);
+                delete remotePlayers[id];
+            }
         }
 
+        // --- World Logic ---
         function spawnRemotePart(id, data) {
             if (worldObjects[id]) return; 
             
@@ -571,7 +730,7 @@
             
             mesh.userData = { 
                 isCustom: true, isWorld: true, anchored: data.anchored, 
-                canCollide: data.canCollide, dbId: id, mode: 'world' 
+                canCollide: data.canCollide, dbId: id, type: data.type, mode: 'world' 
             };
             
             worldGroup.add(mesh);
@@ -581,7 +740,7 @@
         function updateRemotePart(id, data) {
             const mesh = worldObjects[id];
             if (!mesh) return;
-            if (selectedObject === mesh && isEditing) return;
+            if (selectedObject === mesh && isEditing) return; // Don't overwrite if editing
 
             mesh.position.set(data.px, data.py, data.pz);
             mesh.rotation.set(data.rx, data.ry, data.rz);
@@ -589,6 +748,15 @@
             mesh.material.color.setHex(data.color);
             mesh.userData.anchored = data.anchored;
             mesh.userData.canCollide = data.canCollide;
+        }
+
+        function deleteWorldPart(id) {
+            const mesh = worldObjects[id];
+            if (mesh) {
+                mesh.parent.remove(mesh);
+                delete worldObjects[id];
+                if (selectedObject === mesh) window.gameEditor.clearSelection();
+            }
         }
 
         // --- Game Logic ---
@@ -607,9 +775,8 @@
         
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
-        let isEditing = false, activeTab = 'avatar', selectedObject = null, isPickingParent = false;
-        const actionHistory = []; let tempTransformState = null, clipboard = null;
-
+        let isEditing = false, activeTab = 'avatar', selectedObject = null;
+        
         // --- EDITOR MODIFICATIONS ---
         window.gameEditor = {
             setTab: function(tab) {
@@ -633,28 +800,36 @@
                     document.getElementById('crosshair').style.display = "none";
                 } else {
                     ui.style.display = 'none'; gameUI.style.opacity = '1'; btn.textContent = 'Open Tools';
-                    this.clearSelection(); isPickingParent = false;
+                    this.clearSelection();
                 }
             },
             addPart: function(type, overrideData) { if (!isEditing) return; this.createObject(type, 'avatar', overrideData); },
             
             addWorldPart: function(type, overrideData) {
                 if (!isEditing) return;
-                if (isOffline) return this.createObject(type, 'world', overrideData); // Fallback for local
-
-                const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5)); 
-                addDoc(collection(db, 'worldObjects'), {
+                // Request create
+                const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5));
+                const data = {
                     type: type,
                     px: spawnPos.x, py: spawnPos.y, pz: spawnPos.z,
                     rx: 0, ry: 0, rz: 0,
                     sx: 1, sy: 1, sz: 1,
-                    color: Math.random() * 0xffffff,
-                    anchored: true, canCollide: true, owner: localPlayerId
-                }).catch(e => console.error("Add part failed", e));
+                    color: Math.floor(Math.random() * 0xffffff),
+                    anchored: true, canCollide: true
+                };
+
+                if (NetState.isHost) {
+                    const id = generateId();
+                    const finalData = { ...data, id: id };
+                    spawnRemotePart(id, finalData);
+                    broadcast({ type: 'WORLD_CREATE', data: finalData });
+                } else if (NetState.conn) {
+                    NetState.conn.send({ type: 'REQ_WORLD_CREATE', data: data });
+                }
             },
             
             createObject: function(type, mode, data) {
-                if (mode === 'world' && !isOffline && !data) return; 
+                if (mode === 'world' && !data) return; // Should go through addWorldPart
 
                 let geometry;
                 if (type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -665,24 +840,13 @@
                 mesh.castShadow = true;
                 
                 mesh.userData = { 
-                    isCustom: true, 
-                    mode: mode, 
-                    anchored: (mode === 'world'), 
-                    canCollide: true,
+                    isCustom: true, mode: mode, anchored: false, canCollide: true,
                     velocity: new THREE.Vector3() 
                 };
 
-                let parent;
-                if (mode === 'world') parent = worldGroup;
-                else parent = bodyParts[document.getElementById('parent-selector').value];
-                
+                let parent = bodyParts[document.getElementById('parent-selector').value];
                 parent.add(mesh);
-                
-                if (data) { mesh.position.copy(data.pos); mesh.rotation.copy(data.rot); mesh.scale.copy(data.scl); } 
-                else if (mode === 'world') {
-                     const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
-                     mesh.position.copy(playerGroup.position).add(fwd.multiplyScalar(5)).addScalar(0, 2, 0);
-                } else { mesh.position.set(0, 0, 1); }
+                mesh.position.set(0, 0, 1);
                 
                 this.selectObject(mesh);
             },
@@ -703,31 +867,44 @@
                 transformControl.detach(); selectionHelper.visible = false; selectedObject = null;
             },
             captureTransformEnd: function(obj) {
-                if (obj.userData.mode === 'world' && obj.userData.dbId && !isOffline) {
-                    const ref = doc(db, 'worldObjects', obj.userData.dbId);
-                    updateDoc(ref, {
+                if (obj.userData.mode === 'world' && obj.userData.dbId) {
+                    const data = {
                         px: obj.position.x, py: obj.position.y, pz: obj.position.z,
                         rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
-                        sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z
-                    });
+                        sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
+                        color: obj.material.color.getHex(),
+                        anchored: obj.userData.anchored,
+                        canCollide: obj.userData.canCollide
+                    };
+                    if (NetState.isHost) {
+                         broadcast({ type: 'WORLD_UPDATE', id: obj.userData.dbId, data: data });
+                    } else if (NetState.conn) {
+                         NetState.conn.send({ type: 'REQ_WORLD_UPDATE', id: obj.userData.dbId, data: data });
+                    }
                 }
             },
-            captureTransformStart: function(obj) {},
             setAnchored: function(val) {
                 if(selectedObject) {
                     selectedObject.userData.anchored = val;
-                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { anchored: val });
+                    this.captureTransformEnd(selectedObject);
                 }
             },
             setCanCollide: function(val) {
                 if(selectedObject) {
                     selectedObject.userData.canCollide = val;
-                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { canCollide: val });
+                    this.captureTransformEnd(selectedObject);
                 }
             },
             deleteSelected: function() {
                 if(selectedObject) {
-                    if (selectedObject.userData.dbId && !isOffline) deleteDoc(doc(db, 'worldObjects', selectedObject.userData.dbId));
+                    if (selectedObject.userData.dbId) {
+                        if(NetState.isHost) {
+                            deleteWorldPart(selectedObject.userData.dbId);
+                            broadcast({ type: 'WORLD_DELETE', id: selectedObject.userData.dbId });
+                        } else if (NetState.conn) {
+                            NetState.conn.send({ type: 'REQ_WORLD_DELETE', id: selectedObject.userData.dbId });
+                        }
+                    }
                     else selectedObject.parent.remove(selectedObject);
                     this.clearSelection();
                 }
@@ -736,9 +913,7 @@
                 transformControl.setMode(mode);
                 document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
                 document.getElementById('mode-' + mode).classList.add('active');
-            },
-            undo: function() { console.log("Undo not fully supported in Multiplayer mode yet"); },
-            copy: function() {}, paste: function() {}, startPickParent: function() {}
+            }
         };
 
         transformControl.addEventListener('dragging-changed', (event) => {
@@ -850,21 +1025,21 @@
         function updatePhysics(delta) {
             worldGroup.children.forEach(part => {
                 if (part.userData.isWorld && !part.userData.anchored) {
-                     part.updateMatrixWorld(); 
-                     if (!part.userData.velocity) part.userData.velocity = new THREE.Vector3();
-                     part.userData.velocity.y += GRAVITY * delta;
-                     part.position.addScaledVector(part.userData.velocity, delta);
-                     
-                     const box = new THREE.Box3().setFromObject(part);
-                     if (box.min.y < 0) {
-                         const overlap = 0 - box.min.y;
-                         part.position.y += overlap;
-                         if (part.userData.velocity.y < 0) {
-                            part.userData.velocity.y = -part.userData.velocity.y * 0.3;
-                            part.userData.velocity.x *= 0.8; part.userData.velocity.z *= 0.8;
-                            if (Math.abs(part.userData.velocity.y) < 1) part.userData.velocity.y = 0; 
-                         }
-                     }
+                      part.updateMatrixWorld(); 
+                      if (!part.userData.velocity) part.userData.velocity = new THREE.Vector3();
+                      part.userData.velocity.y += GRAVITY * delta;
+                      part.position.addScaledVector(part.userData.velocity, delta);
+                      
+                      const box = new THREE.Box3().setFromObject(part);
+                      if (box.min.y < 0) {
+                          const overlap = 0 - box.min.y;
+                          part.position.y += overlap;
+                          if (part.userData.velocity.y < 0) {
+                             part.userData.velocity.y = -part.userData.velocity.y * 0.3;
+                             part.userData.velocity.x *= 0.8; part.userData.velocity.z *= 0.8;
+                             if (Math.abs(part.userData.velocity.y) < 1) part.userData.velocity.y = 0; 
+                          }
+                      }
                 }
             });
 
@@ -935,8 +1110,35 @@
             updatePhysics(delta);
             updateAnimation(delta, isMoving);
             updateCameraPosition();
-            syncLocalPlayer(); 
-            updateRemoteAvatars(delta); 
+            
+            // P2P Sync
+            if (isGameActive) sendPlayerUpdate();
+            
+            // P2P Player Rendering
+            const lerpFactor = 5 * delta;
+            Object.values(remotePlayers).forEach(p => {
+                p.group.position.lerp(p.targetPos, lerpFactor);
+                let rotDiff = p.targetRot - p.group.rotation.y;
+                while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+                while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+                p.group.rotation.y += rotDiff * lerpFactor;
+                
+                // Anim
+                const speed = p.group.position.distanceTo(p.targetPos) / delta;
+                const isMoving = speed > 0.1;
+                const time = clock.getElapsedTime() * 12;
+                if (isMoving) {
+                    p.parts.leftLeg.rotation.x = Math.sin(time) * 0.8;
+                    p.parts.rightLeg.rotation.x = Math.sin(time + Math.PI) * 0.8;
+                    p.parts.leftArm.rotation.x = Math.sin(time + Math.PI) * 0.8;
+                    p.parts.rightArm.rotation.x = Math.sin(time) * 0.8;
+                } else {
+                    p.parts.leftLeg.rotation.x = THREE.MathUtils.lerp(p.parts.leftLeg.rotation.x, 0, lerpFactor);
+                    p.parts.rightLeg.rotation.x = THREE.MathUtils.lerp(p.parts.rightLeg.rotation.x, 0, lerpFactor);
+                    p.parts.leftArm.rotation.x = THREE.MathUtils.lerp(p.parts.leftArm.rotation.x, 0, lerpFactor);
+                    p.parts.rightArm.rotation.x = THREE.MathUtils.lerp(p.parts.rightArm.rotation.x, 0, lerpFactor);
+                }
+            });
         }
 
         function updateAnimation(delta, isMoving) {
@@ -956,50 +1158,6 @@
             }
         }
         
-        function updateRemoteAvatars(delta) {
-            const lerpFactor = 5 * delta;
-            Object.values(remotePlayers).forEach(p => {
-                p.group.position.lerp(p.targetPos, lerpFactor);
-                let rotDiff = p.targetRot - p.group.rotation.y;
-                while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-                while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-                p.group.rotation.y += rotDiff * lerpFactor;
-                const speed = p.group.position.distanceTo(p.targetPos) / delta;
-                const isMoving = speed > 0.1;
-                const time = clock.getElapsedTime() * 12;
-                if (isMoving) {
-                    p.parts.leftLeg.rotation.x = Math.sin(time) * 0.8;
-                    p.parts.rightLeg.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                    p.parts.leftArm.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                    p.parts.rightArm.rotation.x = Math.sin(time) * 0.8;
-                } else {
-                    p.parts.leftLeg.rotation.x = THREE.MathUtils.lerp(p.parts.leftLeg.rotation.x, 0, lerpFactor);
-                    p.parts.rightLeg.rotation.x = THREE.MathUtils.lerp(p.parts.rightLeg.rotation.x, 0, lerpFactor);
-                    p.parts.leftArm.rotation.x = THREE.MathUtils.lerp(p.parts.leftArm.rotation.x, 0, lerpFactor);
-                    p.parts.rightArm.rotation.x = THREE.MathUtils.lerp(p.parts.rightArm.rotation.x, 0, lerpFactor);
-                }
-            });
-        }
-
-        // --- DISCONNECT HANDLER ---
-        window.addEventListener('beforeunload', () => {
-            if (localPlayerId && !isOffline) {
-                deleteDoc(doc(db, 'players', localPlayerId));
-            }
-        });
-
-        // --- STALE PLAYER CLEANUP ---
-        setInterval(() => {
-            const now = Date.now();
-            Object.keys(remotePlayers).forEach(uid => {
-                const p = remotePlayers[uid];
-                if (now - p.lastUpdate > 10000) { 
-                    remotePlayersGroup.remove(p.group);
-                    delete remotePlayers[uid];
-                }
-            });
-        }, 2000);
-
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
