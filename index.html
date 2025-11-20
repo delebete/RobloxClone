@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roblox-Style P2P Multiplayer</title>
+    <title>Blox World: Hybrid Networking</title>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
     <style>
         body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #232527; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -26,6 +27,7 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         #room-hud span { color: #00ffaa; font-family: monospace; font-size: 18px; margin-left: 5px; }
+        #room-hud .mode-badge { font-size: 10px; background: #444; padding: 2px 6px; border-radius: 4px; margin-left: 10px; vertical-align: middle; text-transform: uppercase; }
 
         /* Login Modal */
         #login-screen {
@@ -33,19 +35,42 @@
             background: #232527; z-index: 200; display: flex; justify-content: center; align-items: center; flex-direction: column;
         }
         .login-box {
-            background: #393b3d; padding: 40px; border-radius: 10px; text-align: center;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 320px;
+            background: #393b3d; padding: 30px; border-radius: 10px; text-align: center;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 340px;
         }
         .login-box h1 { color: white; margin-top: 0; margin-bottom: 5px;}
-        .login-box p { color: #aaa; font-size: 12px; margin-bottom: 20px; }
+        .login-box p { color: #aaa; font-size: 12px; margin-bottom: 15px; }
         
         .input-group { margin-bottom: 15px; text-align: left; }
         .input-group label { display: block; color: #ccc; margin-bottom: 5px; font-size: 12px; }
-        .login-box input {
+        .login-box input[type="text"] {
             width: 100%; padding: 10px; border-radius: 5px; border: 1px solid #555;
             background: #232527; color: white; font-size: 14px; box-sizing: border-box;
         }
         
+        /* Toggle Switch */
+        .mode-switch-container {
+            background: #2a2c2e; padding: 10px; border-radius: 6px; margin-bottom: 15px;
+            display: flex; align-items: center; justify-content: space-between;
+            border: 1px solid #444;
+        }
+        .mode-label { color: white; font-size: 14px; font-weight: bold; }
+        .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #ccc; transition: .4s; border-radius: 20px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px;
+            background-color: white; transition: .4s; border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #00a2ff; }
+        input:checked + .slider:before { transform: translateX(20px); }
+        .mode-desc { font-size: 10px; color: #888; margin-top: 5px; text-align: left; }
+
+        #server-url-container { display: none; margin-bottom: 15px; text-align: left; }
+
         .btn-row { display: flex; gap: 10px; margin-top: 10px; }
         .btn-primary {
             flex: 1; padding: 12px; background: #00a2ff; color: white; border: none;
@@ -57,9 +82,6 @@
             border-radius: 5px; font-size: 14px; font-weight: bold; cursor: pointer;
         }
         .btn-secondary:hover { background: #555; }
-        .btn-danger {
-             background: #e74c3c; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 10px;
-        }
         
         #host-id-display-container { display: none; margin-top: 15px; background: #222; padding: 15px; border-radius: 5px; border: 1px solid #444; }
         #host-id-text { color: #00ffaa; font-family: monospace; font-size: 24px; letter-spacing: 2px; font-weight: bold; margin: 5px 0; }
@@ -76,7 +98,7 @@
         
         /* Tools UI */
         #editor-ui {
-            position: absolute; top: 60px; right: 20px; width: 240px; /* Moved down slightly */
+            position: absolute; top: 60px; right: 20px; width: 240px;
             background: rgba(35, 37, 39, 0.95); color: white; padding: 15px;
             border-radius: 8px; border: 1px solid #444; display: none;
             max-height: calc(100vh - 140px); overflow-y: auto; z-index: 90;
@@ -133,8 +155,25 @@
     <!-- Login Screen -->
     <div id="login-screen">
         <div class="login-box">
-            <h1>Blox World P2P</h1>
-            <p>Peer-to-Peer Multiplayer</p>
+            <h1>Blox World</h1>
+            <p>Multiplayer Demo</p>
+            
+            <div class="mode-switch-container">
+                <div class="mode-label">Connection: <span id="mode-text">P2P</span></div>
+                <label class="switch">
+                    <input type="checkbox" id="net-mode-toggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="mode-desc" id="mode-desc">
+                Direct connection. Free, but blocked by school Wi-Fi.
+            </div>
+
+            <!-- Server URL Input (Hidden by default) -->
+            <div id="server-url-container">
+                <label style="color:#ccc; font-size:12px;">Server URL (Glitch/Render)</label>
+                <input type="text" id="server-url-input" placeholder="https://your-project.glitch.me">
+            </div>
             
             <div class="input-group">
                 <label>Username</label>
@@ -162,26 +201,25 @@
                 <button id="copy-btn">Copy to Clipboard</button>
             </div>
             
-            <div id="connection-error-container" style="display:none; margin-top: 10px; border-top: 1px solid #555; padding-top: 10px;">
-                <p id="connection-msg" style="color:#ff4444; font-size:12px; margin: 0 0 5px 0;"></p>
-                <button class="btn-danger" id="retry-btn" style="display:none;">Retry Connection</button>
-            </div>
+            <p id="connection-msg" style="color:#ff4444; font-size:12px; margin-top:10px; display:none;"></p>
         </div>
     </div>
 
-    <div id="room-hud">ROOM CODE: <span id="room-code-display"></span></div>
+    <div id="room-hud">
+        CODE: <span id="room-code-display"></span>
+        <span id="mode-badge" class="mode-badge">P2P</span>
+    </div>
     <div id="network-status">Idle</div>
-    <div id="debug-console">P2P System Ready...</div>
+    <div id="debug-console">System Ready...</div>
 
     <div id="crosshair"></div>
 
     <div id="ui-layer">
-        <h1>P2P Demo</h1>
+        <h1>Controls</h1>
         <p><span class="key">W</span> <span class="key">A</span> <span class="key">S</span> <span class="key">D</span> to Walk</p>
         <p><span class="key">Space</span> to Jump</p>
         <p><span class="key">Shift</span> Toggle Shift Lock</p>
         <p><span class="key">Right Click (Hold)</span> Rotate Camera</p>
-        <p><span class="key">Scroll</span> Zoom</p>
         <div style="margin-top: 10px; border-top: 1px solid #666; padding-top: 10px;">
             <div>Shift Lock: <span id="shift-status" class="status-badge off">OFF</span></div>
         </div>
@@ -260,7 +298,6 @@
         import * as THREE from 'three';
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-        // --- Debug Logger ---
         function log(msg) {
             const consoleEl = document.getElementById('debug-console');
             consoleEl.innerText += `\n> ${msg}`;
@@ -269,48 +306,17 @@
         }
 
         // --- NETWORK GLOBAL STATE ---
-        const APP_PREFIX = 'blox-p2p-2025-'; // Unique prefix for this app
         const NetState = {
+            mode: 'p2p', // 'p2p' or 'server'
             isHost: false,
+            // P2P Stuff
             peer: null,
-            conn: null, // Client connection to host
-            connections: [], // Host connections to clients
+            conn: null,
+            connections: [],
+            // Server Stuff
+            socket: null,
+            id: null, // My ID
             code: null
-        };
-
-        // FIX: Improved ICE Server list with redundancies
-        const peerConfig = {
-            debug: 2, // Print errors to console
-            config: {
-                iceServers: [
-                    // Google Public STUN
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' },
-                    { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' },
-                    
-                    // Mozilla Public STUN (Backup)
-                    { urls: 'stun:stun.services.mozilla.com' },
-                    
-                    // OpenRelay Public TURN (The "Public One")
-                    {
-                        urls: "turn:openrelay.metered.ca:80",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:openrelay.metered.ca:443",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    }
-                ]
-            }
         };
 
         let localPlayerName = "Guest";
@@ -318,927 +324,39 @@
         const remotePlayers = {}; 
         const worldObjects = {}; 
 
-        // --- P2P CONNECTION LOGIC ---
-        const hostBtn = document.getElementById('host-btn');
-        const joinBtn = document.getElementById('join-btn');
-        const retryBtn = document.getElementById('retry-btn');
-        const statusEl = document.getElementById('network-status');
-        const msgEl = document.getElementById('connection-msg');
-        const errContainer = document.getElementById('connection-error-container');
-        const hudEl = document.getElementById('room-hud');
-        const codeEl = document.getElementById('room-code-display');
-
-        // Generate a simple random ID for game entities
-        function generateId() {
-            return Math.random().toString(36).substr(2, 9);
-        }
-
-        function initGame(code) {
-            document.getElementById('login-screen').style.display = 'none';
-            document.getElementById('toggle-editor-btn').style.display = 'block';
-            hudEl.style.display = 'block';
-            codeEl.textContent = code;
-            isGameActive = true;
-        }
-
-        function handleData(data, senderConn) {
-            // --- PROTOCOL HANDLER ---
-            switch(data.type) {
-                case 'WELCOME':
-                    // Client receives initial state
-                    log(`Connected! Found ${data.players.length} players and ${data.world.length} objects.`);
-                    data.players.forEach(p => updateRemotePlayer(p.id, p));
-                    data.world.forEach(w => spawnRemotePart(w.id, w));
-                    break;
-                    
-                case 'PLAYER_UPDATE':
-                    // Received player movement
-                    if (NetState.isHost) {
-                        // If Host, broadcast to everyone else
-                        NetState.connections.forEach(c => {
-                            if (c.peer !== senderConn.peer) c.send(data);
-                        });
+        // --- CONFIGS ---
+        const P2P_PREFIX = 'blox-p2p-2025-';
+        const peerConfig = {
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    {
+                        urls: "turn:openrelay.metered.ca:80",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
                     }
-                    updateRemotePlayer(data.id, data);
-                    break;
-
-                case 'PLAYER_LEAVE':
-                    removeRemotePlayer(data.id);
-                    break;
-                    
-                case 'REQ_WORLD_CREATE':
-                    if (NetState.isHost) {
-                        // Host creates the object and broadcasts
-                        const newId = generateId();
-                        const worldData = { ...data.data, id: newId };
-                        spawnRemotePart(newId, worldData); // Local spawn
-                        broadcast({ type: 'WORLD_CREATE', data: worldData });
-                    }
-                    break;
-
-                case 'WORLD_CREATE':
-                    // Client spawns object
-                    spawnRemotePart(data.data.id, data.data);
-                    break;
-
-                case 'REQ_WORLD_UPDATE':
-                    if (NetState.isHost) {
-                        // Host updates authoritative state and broadcasts
-                        updateRemotePart(data.id, data.data);
-                        broadcast({ type: 'WORLD_UPDATE', id: data.id, data: data.data });
-                    }
-                    break;
-
-                case 'WORLD_UPDATE':
-                    updateRemotePart(data.id, data.data);
-                    break;
-                
-                case 'REQ_WORLD_DELETE':
-                    if (NetState.isHost) {
-                        deleteWorldPart(data.id);
-                        broadcast({ type: 'WORLD_DELETE', id: data.id });
-                    }
-                    break;
-
-                case 'WORLD_DELETE':
-                    deleteWorldPart(data.id);
-                    break;
-            }
-        }
-
-        function broadcast(data) {
-            if (!NetState.isHost) return;
-            NetState.connections.forEach(c => c.send(data));
-        }
-
-        // --- HOSTING ---
-        function createHost() {
-             // Generate 6 digit code
-             const code = Math.floor(100000 + Math.random() * 900000).toString();
-             NetState.code = code;
-             
-             statusEl.textContent = "Connecting to Signaling Server...";
-             NetState.peer = new window.Peer(APP_PREFIX + code, peerConfig);
-             
-             NetState.peer.on('error', (err) => {
-                 if(err.type === 'unavailable-id') {
-                     console.warn("ID Collision, retrying...");
-                     createHost(); // Retry with new code
-                 } else {
-                     console.error(err);
-                     msgEl.textContent = "Host Error: " + err.type;
-                     errContainer.style.display = 'block';
-                 }
-             });
-
-             NetState.peer.on('open', (id) => {
-                log("Hosting Game. Code: " + code);
-                statusEl.textContent = "Hosting: " + code;
-                document.getElementById('host-id-display-container').style.display = 'block';
-                document.getElementById('host-id-text').textContent = code;
-                hostBtn.disabled = true;
-                joinBtn.disabled = true;
-                initGame(code);
-            });
-
-            NetState.peer.on('connection', (conn) => {
-                log("New Player Negotiating...");
-                
-                conn.on('open', () => {
-                    log("Player Connected! " + conn.peer);
-                    NetState.connections.push(conn);
-                    
-                    // Send Welcome Package
-                    const players = Object.values(remotePlayers).map(p => ({
-                        id: p.id, x: p.group.position.x, y: p.group.position.y, z: p.group.position.z, 
-                        rot: p.group.rotation.y, name: p.currentName
-                    }));
-                    // Include Host
-                    players.push({
-                        id: NetState.peer.id, x: playerGroup.position.x, y: playerGroup.position.y, z: playerGroup.position.z,
-                        rot: playerGroup.rotation.y, name: localPlayerName
-                    });
-                    
-                    const world = Object.values(worldObjects).map(obj => {
-                        return {
-                            id: obj.userData.dbId,
-                            type: obj.userData.type,
-                            px: obj.position.x, py: obj.position.y, pz: obj.position.z,
-                            rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
-                            sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
-                            color: obj.material.color.getHex(),
-                            anchored: obj.userData.anchored,
-                            canCollide: obj.userData.canCollide
-                        };
-                    });
-
-                    conn.send({ type: 'WELCOME', players: players, world: world });
-                });
-
-                conn.on('data', (data) => handleData(data, conn));
-
-                conn.on('close', () => {
-                    log("Player Disconnected: " + conn.peer);
-                    NetState.connections = NetState.connections.filter(c => c !== conn);
-                    removeRemotePlayer(conn.peer);
-                    broadcast({ type: 'PLAYER_LEAVE', id: conn.peer });
-                });
-            });
-        }
-
-        hostBtn.addEventListener('click', () => {
-            localPlayerName = document.getElementById('username-input').value || "Host";
-            NetState.isHost = true;
-            statusEl.textContent = "Initializing Host...";
-            createHost();
-        });
-
-        // --- JOINING ---
-        function showError(msg, allowRetry = true) {
-            errContainer.style.display = 'block';
-            msgEl.textContent = msg;
-            if(allowRetry) retryBtn.style.display = 'inline-block';
-        }
-
-        function joinGame(codeInput) {
-             localPlayerName = document.getElementById('username-input').value || "Guest";
-            NetState.isHost = false;
-            NetState.code = codeInput;
-            
-            statusEl.textContent = "Connecting to Signaling...";
-            errContainer.style.display = 'none';
-            
-            // Create Client Peer
-            if (NetState.peer) NetState.peer.destroy();
-            NetState.peer = new window.Peer(undefined, peerConfig); 
-            
-            NetState.peer.on('open', (id) => {
-                log("Signaling Connected. ID: " + id);
-                statusEl.textContent = "Finding Host: " + codeInput + "...";
-                
-                const hostId = APP_PREFIX + codeInput;
-                NetState.conn = NetState.peer.connect(hostId, { reliable: true });
-                
-                // Fallback timeout
-                const connTimeout = setTimeout(() => {
-                    if(!NetState.conn || !NetState.conn.open) {
-                        log("Connection Timeout.");
-                        statusEl.textContent = "Timeout.";
-                        showError("Connection timed out. (Restricted Network?)");
-                        if(NetState.conn) NetState.conn.close();
-                    }
-                }, 15000); // 15s timeout
-
-                NetState.conn.on('open', () => {
-                    clearTimeout(connTimeout);
-                    log("Negotiation Successful! Joining...");
-                    statusEl.textContent = "Connected to " + codeInput;
-                    initGame(codeInput);
-                });
-                
-                NetState.conn.on('data', (data) => handleData(data, NetState.conn));
-                NetState.conn.on('close', () => {
-                    alert("Host disconnected");
-                    location.reload();
-                });
-                NetState.conn.on('error', (err) => {
-                    console.error("Conn Error:", err);
-                });
-            });
-            
-            NetState.peer.on('error', (err) => {
-                console.error("Peer Error:", err);
-                statusEl.textContent = "Error";
-                showError("Network Error: " + err.type);
-            });
-        }
-
-        joinBtn.addEventListener('click', () => {
-            const codeInput = document.getElementById('host-id-input').value.trim();
-            if (!codeInput || codeInput.length !== 6) {
-                showError("Please enter a valid 6-digit code.", false);
-                return;
-            }
-            joinGame(codeInput);
-        });
-        
-        retryBtn.addEventListener('click', () => {
-             const codeInput = document.getElementById('host-id-input').value.trim();
-             if(codeInput) joinGame(codeInput);
-        });
-
-        document.getElementById('copy-btn').addEventListener('click', () => {
-            navigator.clipboard.writeText(NetState.code);
-            alert("Code Copied!");
-        });
-
-
-        // --- Configuration ---
-        const COLORS = {
-            head: 0xF5CD2F, torso: 0x0D69AC, arms: 0xF5CD2F, legs: 0xA4BD47,
-            baseplate: 0x999999, studs: 0x777777
-        };
-        const WALK_SPEED = 16;
-        const JUMP_FORCE = 25;
-        const GRAVITY = -60;
-        const ROTATION_SPEED = 10;
-
-        // --- Three.js Setup ---
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 20, 250);
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        document.getElementById('canvas-container').appendChild(renderer.domElement);
-
-        // Lighting & Env
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-        scene.add(ambientLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-        dirLight.position.set(50, 100, 50);
-        dirLight.castShadow = true;
-        dirLight.shadow.mapSize.width = 2048;
-        dirLight.shadow.mapSize.height = 2048;
-        dirLight.shadow.bias = -0.001; 
-        scene.add(dirLight);
-        
-        const groundSize = 400;
-        const groundGeo = new THREE.PlaneGeometry(groundSize, groundSize);
-        const groundMat = new THREE.MeshStandardMaterial({ color: COLORS.baseplate, roughness: 0.8 });
-        const ground = new THREE.Mesh(groundGeo, groundMat);
-        ground.rotation.x = -Math.PI / 2;
-        ground.receiveShadow = true;
-        ground.userData = { name: "Baseplate", isWorld: true, anchored: true, canCollide: true };
-        scene.add(ground); 
-        scene.add(new THREE.GridHelper(groundSize, 100, 0x555555, 0x888888));
-
-        // Groups
-        const worldGroup = new THREE.Group();
-        scene.add(worldGroup);
-        const playerGroup = new THREE.Group();
-        scene.add(playerGroup); 
-        const remotePlayersGroup = new THREE.Group();
-        scene.add(remotePlayersGroup);
-
-        // --- Camera Variables ---
-        const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, minDistance: 2, maxDistance: 80, sensitivity: 0.002, offsetY: 4.5 };
-
-        // --- Helper Functions ---
-        function updateCameraPosition() {
-            cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, cameraParams.targetDistance, 0.2);
-            const r = cameraParams.distance, phi = cameraParams.phi, theta = cameraParams.theta;
-            const x = r * Math.sin(phi) * Math.sin(theta);
-            const y = r * Math.cos(phi);
-            const z = r * Math.sin(phi) * Math.cos(theta);
-            
-            const targetPos = playerGroup.position.clone();
-            targetPos.y += cameraParams.offsetY; 
-            camera.position.set(targetPos.x + x, targetPos.y + y, targetPos.z + z);
-            camera.lookAt(targetPos);
-
-            let isFirstPerson = false;
-            if (cameraParams.distance < 2.5) { isFirstPerson = true; playerGroup.visible = false; } 
-            else { isFirstPerson = false; playerGroup.visible = true; }
-        }
-
-        function createFaceTexture() {
-            const canvas = document.createElement('canvas');
-            canvas.width = 512; canvas.height = 256;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#F5CD2F'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-            const centerX = canvas.width * 0.75; const centerY = canvas.height * 0.5;
-            ctx.fillStyle = '#111';
-            ctx.beginPath(); ctx.arc(centerX - 40, centerY - 20, 12, 0, Math.PI * 2); 
-            ctx.arc(centerX + 40, centerY - 20, 12, 0, Math.PI * 2); ctx.fill();
-            ctx.lineWidth = 8; ctx.strokeStyle = '#111';
-            ctx.beginPath(); ctx.arc(centerX, centerY, 50, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
-            const tex = new THREE.CanvasTexture(canvas);
-            tex.colorSpace = THREE.SRGBColorSpace;
-            return tex;
-        }
-
-        function createNameTag(name) {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = 256; canvas.height = 64;
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillRect(0,0,256,64); // Background rect
-            ctx.font = 'Bold 40px Arial';
-            ctx.textAlign = "center";
-            ctx.fillStyle = 'white';
-            ctx.fillText(name, 128, 48);
-            const tex = new THREE.CanvasTexture(canvas);
-            const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
-            const sprite = new THREE.Sprite(spriteMat);
-            sprite.scale.set(4, 1, 1);
-            sprite.position.y = 5.5; // Above head
-            sprite.name = "nametag";
-            return sprite;
-        }
-
-        function createAvatar(isLocal) {
-            const group = new THREE.Group();
-            const parts = {};
-            
-            const torsoGeo = new THREE.BoxGeometry(2, 2, 1);
-            const limbGeo = new THREE.BoxGeometry(1, 2, 1);
-            const headGeo = new THREE.CylinderGeometry(0.6, 0.6, 1.2, 32);
-
-            const skinMat = new THREE.MeshStandardMaterial({ color: COLORS.head });
-            const faceMat = new THREE.MeshStandardMaterial({ map: createFaceTexture() });
-            const torsoMat = new THREE.MeshStandardMaterial({ color: COLORS.torso });
-            const armMat = new THREE.MeshStandardMaterial({ color: COLORS.arms });
-            const legMat = new THREE.MeshStandardMaterial({ color: COLORS.legs });
-
-            const torso = new THREE.Mesh(torsoGeo, torsoMat);
-            torso.position.y = 3; torso.castShadow = true;
-            group.add(torso); parts.torso = torso;
-
-            const head = new THREE.Mesh(headGeo, [faceMat, skinMat, skinMat]);
-            head.position.y = 1.6; head.rotation.y = -Math.PI / 2;
-            torso.add(head); parts.head = head;
-
-            const leftArm = new THREE.Mesh(limbGeo, armMat); 
-            const laPivot = new THREE.Group(); laPivot.position.set(-1.5, 0.8, 0); torso.add(laPivot);
-            leftArm.position.y = -0.8; leftArm.castShadow = true; laPivot.add(leftArm); parts.leftArm = laPivot;
-
-            const rightArm = new THREE.Mesh(limbGeo, armMat); 
-            const raPivot = new THREE.Group(); raPivot.position.set(1.5, 0.8, 0); torso.add(raPivot);
-            rightArm.position.y = -0.8; rightArm.castShadow = true; raPivot.add(rightArm); parts.rightArm = raPivot;
-
-            const leftLeg = new THREE.Mesh(limbGeo, legMat); 
-            const llPivot = new THREE.Group(); llPivot.position.set(-0.5, -1, 0); torso.add(llPivot);
-            leftLeg.position.y = -1; leftLeg.castShadow = true; llPivot.add(leftLeg); parts.leftLeg = llPivot;
-
-            const rightLeg = new THREE.Mesh(limbGeo, legMat); 
-            const rlPivot = new THREE.Group(); rlPivot.position.set(0.5, -1, 0); torso.add(rlPivot);
-            rightLeg.position.y = -1; rightLeg.castShadow = true; rlPivot.add(rightLeg); parts.rightLeg = rlPivot;
-
-            if(isLocal) group.userData.parts = parts;
-            return { group, parts };
-        }
-
-        // Init Local Player
-        const localAvatar = createAvatar(true);
-        playerGroup.add(localAvatar.group);
-        const bodyParts = localAvatar.group.userData.parts; 
-        
-        // --- Network Game Sync ---
-        function sendPlayerUpdate() {
-            if (!NetState.peer || !NetState.peer.id) return;
-            
-            const data = {
-                type: 'PLAYER_UPDATE',
-                id: NetState.peer.id,
-                x: playerGroup.position.x,
-                y: playerGroup.position.y,
-                z: playerGroup.position.z,
-                rot: playerGroup.rotation.y,
-                name: localPlayerName
-            };
-
-            if (NetState.isHost) broadcast(data);
-            else if (NetState.conn) NetState.conn.send(data);
-        }
-
-        function updateRemotePlayer(id, data) {
-            if (!NetState.peer || id === NetState.peer.id) return;
-            
-            let p = remotePlayers[id];
-            if (!p) {
-                log("New Player: " + data.name);
-                const remote = createAvatar(false);
-                remote.group.add(createNameTag(data.name));
-                remotePlayersGroup.add(remote.group);
-                p = remotePlayers[id] = {
-                    id: id,
-                    group: remote.group,
-                    targetPos: new THREE.Vector3(data.x, data.y, data.z),
-                    targetRot: data.rot,
-                    parts: remote.parts,
-                    currentName: data.name
-                };
-            }
-            
-            p.targetPos.set(data.x, data.y, data.z);
-            p.targetRot = data.rot;
-        }
-
-        function removeRemotePlayer(id) {
-            if (remotePlayers[id]) {
-                remotePlayersGroup.remove(remotePlayers[id].group);
-                delete remotePlayers[id];
-            }
-        }
-
-        // --- World Logic ---
-        function spawnRemotePart(id, data) {
-            if (worldObjects[id]) return; 
-            
-            let geometry;
-            if (data.type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
-            else if (data.type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-            else if (data.type === 'wedge') {
-                const shape = new THREE.Shape();
-                shape.moveTo(0,0); shape.lineTo(1,0); shape.lineTo(0,1); shape.lineTo(0,0);
-                geometry = new THREE.ExtrudeGeometry(shape, { depth: 1, bevelEnabled: false });
-                geometry.translate(-0.5, -0.5, -0.5);
-            }
-
-            const mat = new THREE.MeshStandardMaterial({ color: data.color });
-            const mesh = new THREE.Mesh(geometry, mat);
-            mesh.castShadow = true; mesh.receiveShadow = true;
-            mesh.position.set(data.px, data.py, data.pz);
-            mesh.rotation.set(data.rx, data.ry, data.rz);
-            mesh.scale.set(data.sx, data.sy, data.sz);
-            
-            mesh.userData = { 
-                isCustom: true, isWorld: true, anchored: data.anchored, 
-                canCollide: data.canCollide, dbId: id, type: data.type, mode: 'world' 
-            };
-            
-            worldGroup.add(mesh);
-            worldObjects[id] = mesh;
-        }
-
-        function updateRemotePart(id, data) {
-            const mesh = worldObjects[id];
-            if (!mesh) return;
-            if (selectedObject === mesh && isEditing) return; // Don't overwrite if editing
-
-            mesh.position.set(data.px, data.py, data.pz);
-            mesh.rotation.set(data.rx, data.ry, data.rz);
-            mesh.scale.set(data.sx, data.sy, data.sz);
-            mesh.material.color.setHex(data.color);
-            mesh.userData.anchored = data.anchored;
-            mesh.userData.canCollide = data.canCollide;
-        }
-
-        function deleteWorldPart(id) {
-            const mesh = worldObjects[id];
-            if (mesh) {
-                mesh.parent.remove(mesh);
-                delete worldObjects[id];
-                if (selectedObject === mesh) window.gameEditor.clearSelection();
-            }
-        }
-
-        // --- Game Logic ---
-        const keys = { w: false, a: false, s: false, d: false, " ": false };
-        let isShiftLock = false, isRightClickRotating = false;
-        let velocityY = 0, isGrounded = true;
-        const playerDirection = new THREE.Vector3();
-        const clock = new THREE.Clock();
-
-        const transformControl = new TransformControls(camera, renderer.domElement);
-        transformControl.setSpace('local');
-        scene.add(transformControl);
-        const selectionHelper = new THREE.BoxHelper();
-        selectionHelper.material.depthTest = false; selectionHelper.material.transparent = true; selectionHelper.visible = false;
-        scene.add(selectionHelper);
-        
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-        let isEditing = false, activeTab = 'avatar', selectedObject = null;
-        
-        // --- EDITOR MODIFICATIONS ---
-        window.gameEditor = {
-            setTab: function(tab) {
-                activeTab = tab;
-                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                document.getElementById('tab-' + tab).classList.add('active');
-                document.getElementById('content-avatar').classList.toggle('hidden', tab !== 'avatar');
-                document.getElementById('content-world').classList.toggle('hidden', tab !== 'world');
-                this.clearSelection();
-            },
-            toggle: function() {
-                isEditing = !isEditing;
-                const ui = document.getElementById('editor-ui');
-                const btn = document.getElementById('toggle-editor-btn');
-                const gameUI = document.getElementById('ui-layer');
-
-                if (isEditing) {
-                    ui.style.display = 'block'; gameUI.style.opacity = '0.2'; btn.textContent = 'Exit Tools';
-                    document.exitPointerLock(); isShiftLock = false;
-                    document.getElementById('shift-status').textContent = "OFF";
-                    document.getElementById('crosshair').style.display = "none";
-                } else {
-                    ui.style.display = 'none'; gameUI.style.opacity = '1'; btn.textContent = 'Open Tools';
-                    this.clearSelection();
-                }
-            },
-            addPart: function(type, overrideData) { if (!isEditing) return; this.createObject(type, 'avatar', overrideData); },
-            
-            addWorldPart: function(type, overrideData) {
-                if (!isEditing) return;
-                // Request create
-                const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5));
-                const data = {
-                    type: type,
-                    px: spawnPos.x, py: spawnPos.y, pz: spawnPos.z,
-                    rx: 0, ry: 0, rz: 0,
-                    sx: 1, sy: 1, sz: 1,
-                    color: Math.floor(Math.random() * 0xffffff),
-                    anchored: true, canCollide: true
-                };
-
-                if (NetState.isHost) {
-                    const id = generateId();
-                    const finalData = { ...data, id: id };
-                    spawnRemotePart(id, finalData);
-                    broadcast({ type: 'WORLD_CREATE', data: finalData });
-                } else if (NetState.conn) {
-                    NetState.conn.send({ type: 'REQ_WORLD_CREATE', data: data });
-                }
-            },
-            
-            createObject: function(type, mode, data) {
-                if (mode === 'world' && !data) return; // Should go through addWorldPart
-
-                let geometry;
-                if (type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
-                else if (type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-                const color = data ? data.color : Math.random() * 0xffffff;
-                const mat = new THREE.MeshStandardMaterial({ color: color });
-                const mesh = new THREE.Mesh(geometry, mat);
-                mesh.castShadow = true;
-                
-                mesh.userData = { 
-                    isCustom: true, mode: mode, anchored: false, canCollide: true,
-                    velocity: new THREE.Vector3() 
-                };
-
-                let parent = bodyParts[document.getElementById('parent-selector').value];
-                parent.add(mesh);
-                mesh.position.set(0, 0, 1);
-                
-                this.selectObject(mesh);
-            },
-
-            selectObject: function(mesh) {
-                if(selectedObject === mesh) return;
-                selectedObject = mesh;
-                transformControl.attach(mesh);
-                selectionHelper.setFromObject(mesh);
-                selectionHelper.visible = true;
-                if (mesh.userData.mode === 'world') transformControl.setSpace('world');
-                else transformControl.setSpace('local');
-                document.getElementById('color-picker').value = '#' + mesh.material.color.getHexString();
-                document.getElementById('check-anchor').checked = mesh.userData.anchored;
-                document.getElementById('check-collide').checked = mesh.userData.canCollide;
-            },
-            clearSelection: function() {
-                transformControl.detach(); selectionHelper.visible = false; selectedObject = null;
-            },
-            captureTransformEnd: function(obj) {
-                if (obj.userData.mode === 'world' && obj.userData.dbId) {
-                    const data = {
-                        px: obj.position.x, py: obj.position.y, pz: obj.position.z,
-                        rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
-                        sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
-                        color: obj.material.color.getHex(),
-                        anchored: obj.userData.anchored,
-                        canCollide: obj.userData.canCollide
-                    };
-                    if (NetState.isHost) {
-                         broadcast({ type: 'WORLD_UPDATE', id: obj.userData.dbId, data: data });
-                    } else if (NetState.conn) {
-                         NetState.conn.send({ type: 'REQ_WORLD_UPDATE', id: obj.userData.dbId, data: data });
-                    }
-                }
-            },
-            setAnchored: function(val) {
-                if(selectedObject) {
-                    selectedObject.userData.anchored = val;
-                    this.captureTransformEnd(selectedObject);
-                }
-            },
-            setCanCollide: function(val) {
-                if(selectedObject) {
-                    selectedObject.userData.canCollide = val;
-                    this.captureTransformEnd(selectedObject);
-                }
-            },
-            deleteSelected: function() {
-                if(selectedObject) {
-                    if (selectedObject.userData.dbId) {
-                        if(NetState.isHost) {
-                            deleteWorldPart(selectedObject.userData.dbId);
-                            broadcast({ type: 'WORLD_DELETE', id: selectedObject.userData.dbId });
-                        } else if (NetState.conn) {
-                            NetState.conn.send({ type: 'REQ_WORLD_DELETE', id: selectedObject.userData.dbId });
-                        }
-                    }
-                    else selectedObject.parent.remove(selectedObject);
-                    this.clearSelection();
-                }
-            },
-            setMode: function(mode) {
-                transformControl.setMode(mode);
-                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-                document.getElementById('mode-' + mode).classList.add('active');
+                ]
             }
         };
 
-        transformControl.addEventListener('dragging-changed', (event) => {
-            if (!event.value && selectedObject) window.gameEditor.captureTransformEnd(selectedObject);
-        });
+        // --- UI LOGIC: MODE TOGGLE ---
+        const toggleEl = document.getElementById('net-mode-toggle');
+        const modeTextEl = document.getElementById('mode-text');
+        const modeDescEl = document.getElementById('mode-desc');
+        const serverUrlContainer = document.getElementById('server-url-container');
+        const serverUrlInput = document.getElementById('server-url-input');
 
-        document.getElementById('toggle-editor-btn').addEventListener('click', () => window.gameEditor.toggle());
-        document.getElementById('baseplate-color-picker').addEventListener('input', (e) => ground.material.color.set(e.target.value));
-        
-        renderer.domElement.addEventListener('pointerdown', (event) => {
-            if (event.button === 2) { isRightClickRotating = true; document.body.requestPointerLock(); return; }
-            if (!isEditing) return;
-            if (event.button !== 0) return; 
-            const rect = renderer.domElement.getBoundingClientRect();
-            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-            raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects([...worldGroup.children, ...playerGroup.children], true);
-            for (let i = 0; i < intersects.length; i++) {
-                const obj = intersects[i].object;
-                if (obj.userData.isCustom || obj.userData.isWorld) {
-                    window.gameEditor.selectObject(obj);
-                    return;
-                }
-            }
-        });
-        
-        document.addEventListener('pointerup', (event) => {
-            if (event.button === 2) { isRightClickRotating = false; if (!isShiftLock) document.exitPointerLock(); }
-        });
-        
-        window.addEventListener('keydown', (event) => {
-            const key = event.key.toLowerCase();
-            if (keys.hasOwnProperty(key)) keys[key] = true;
-            if (event.key === " ") keys[" "] = true;
-            if (event.key === 'Shift' && !event.repeat) toggleShiftLock();
+        // Load saved URL
+        if(localStorage.getItem('blox_server_url')) {
+            serverUrlInput.value = localStorage.getItem('blox_server_url');
+        }
 
-            if (isEditing) {
-                const k = event.key.toLowerCase();
-                if(k === '1') window.gameEditor.setMode('translate');
-                if(k === '2') window.gameEditor.setMode('rotate');
-                if(k === '3') window.gameEditor.setMode('scale');
-                if(k === 'delete') window.gameEditor.deleteSelected();
-                if(k === 'escape') window.gameEditor.toggle();
-            }
-        });
-        window.addEventListener('keyup', (e) => {
-            const key = e.key.toLowerCase();
-            if (keys.hasOwnProperty(key)) keys[key] = false;
-            if (e.key === " ") keys[" "] = false;
-        });
-
-        // --- Game State ---
-        const shiftStatusEl = document.getElementById('shift-status');
-        const crosshairEl = document.getElementById('crosshair');
-
-        function toggleShiftLock() {
-            if (isEditing) return; 
-            isShiftLock = !isShiftLock;
-            if (isShiftLock) {
-                document.body.requestPointerLock();
-                shiftStatusEl.textContent = "ON"; shiftStatusEl.className = "status-badge on";
-                crosshairEl.style.display = "block";
+        toggleEl.addEventListener('change', () => {
+            if(toggleEl.checked) {
+                NetState.mode = 'server';
+                modeTextEl.textContent = "Server";
+                modeDescEl.textContent = "Requires Hosting. Bypasses all firewalls. No limits.";
+                serverUrlContainer.style.display = 'block';
             } else {
-                if(!isRightClickRotating) document.exitPointerLock();
-                shiftStatusEl.textContent = "OFF"; shiftStatusEl.className = "status-badge off";
-                crosshairEl.style.display = "none";
-            }
-        }
-
-        document.addEventListener('pointerlockchange', () => {
-            if (document.pointerLockElement !== document.body) {
-                if (isShiftLock) toggleShiftLock();
-                isRightClickRotating = false;
-            }
-        });
-
-        document.addEventListener('mousemove', (e) => {
-            const isLocked = document.pointerLockElement === document.body;
-            if (isLocked) {
-                cameraParams.theta -= e.movementX * cameraParams.sensitivity;
-                cameraParams.phi -= e.movementY * cameraParams.sensitivity;
-                cameraParams.phi = Math.max(0.01, Math.min(Math.PI / 2 - 0.1, cameraParams.phi));
-            }
-        });
-
-        // --- Physics & Movement ---
-        const wallRaycaster = new THREE.Raycaster();
-        const floorRaycaster = new THREE.Raycaster();
-
-        function checkMove(proposedMoveX, proposedMoveZ) {
-            const moveVec = new THREE.Vector3(proposedMoveX, 0, proposedMoveZ);
-            const dist = moveVec.length();
-            if (dist < 0.001) return { x: 0, z: 0 };
-            
-            const dir = moveVec.clone().normalize();
-            const origin = playerGroup.position.clone().add(new THREE.Vector3(0, 1, 0));
-            
-            wallRaycaster.set(origin, dir);
-            const collidables = worldGroup.children.filter(o => o.userData.canCollide !== false);
-            const intersects = wallRaycaster.intersectObjects(collidables, true);
-            
-            if (intersects.length > 0 && intersects[0].distance < 1.0 + dist) {
-                 return { x: 0, z: 0 }; 
-            }
-            return { x: proposedMoveX, z: proposedMoveZ };
-        }
-
-        function updatePhysics(delta) {
-            worldGroup.children.forEach(part => {
-                if (part.userData.isWorld && !part.userData.anchored) {
-                      part.updateMatrixWorld(); 
-                      if (!part.userData.velocity) part.userData.velocity = new THREE.Vector3();
-                      part.userData.velocity.y += GRAVITY * delta;
-                      part.position.addScaledVector(part.userData.velocity, delta);
-                      
-                      const box = new THREE.Box3().setFromObject(part);
-                      if (box.min.y < 0) {
-                          const overlap = 0 - box.min.y;
-                          part.position.y += overlap;
-                          if (part.userData.velocity.y < 0) {
-                             part.userData.velocity.y = -part.userData.velocity.y * 0.3;
-                             part.userData.velocity.x *= 0.8; part.userData.velocity.z *= 0.8;
-                             if (Math.abs(part.userData.velocity.y) < 1) part.userData.velocity.y = 0; 
-                          }
-                      }
-                }
-            });
-
-            const origin = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-            floorRaycaster.set(origin, new THREE.Vector3(0, -1, 0));
-            const collidables = worldGroup.children.filter(o => o.userData.canCollide !== false);
-            let floorHeight = 0;
-            const intersects = floorRaycaster.intersectObjects(collidables, true);
-            if (intersects.length > 0) {
-                const hitY = intersects[0].point.y;
-                if (hitY > floorHeight) floorHeight = hitY;
-            }
-            
-            if (keys[" "] && isGrounded) { velocityY = JUMP_FORCE; isGrounded = false; }
-            velocityY += GRAVITY * delta;
-            playerGroup.position.y += velocityY * delta;
-
-            if (playerGroup.position.y < floorHeight) {
-                playerGroup.position.y = floorHeight;
-                velocityY = 0;
-                isGrounded = true;
-            } else {
-                isGrounded = (Math.abs(playerGroup.position.y - floorHeight) < 0.1);
-            }
-        }
-
-        function updatePlayer(delta) {
-            if (isEditing && activeTab === 'avatar') {
-                updateCameraPosition();
-                return; 
-            }
-
-            const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
-            const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0,1,0));
-            
-            playerDirection.set(0,0,0);
-            if(keys.w) playerDirection.add(fwd);
-            if(keys.s) playerDirection.sub(fwd);
-            if(keys.a) playerDirection.sub(right);
-            if(keys.d) playerDirection.add(right);
-
-            const isMoving = playerDirection.lengthSq() > 0;
-
-            if (isMoving) {
-                playerDirection.normalize();
-                const moveDist = WALK_SPEED * delta;
-                const moveX = playerDirection.x * moveDist;
-                const moveZ = playerDirection.z * moveDist;
-
-                const resX = checkMove(moveX, 0);
-                playerGroup.position.x += resX.x;
-                const resZ = checkMove(0, moveZ);
-                playerGroup.position.z += resZ.z;
-                
-                if (isShiftLock) {
-                    playerGroup.rotation.y = cameraParams.theta;
-                } else {
-                    const targetRot = Math.atan2(playerDirection.x, playerDirection.z);
-                    let rotDiff = (targetRot + Math.PI) - playerGroup.rotation.y; 
-                    while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-                    while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-                    playerGroup.rotation.y += rotDiff * ROTATION_SPEED * delta;
-                }
-            } else if (isShiftLock) {
-                playerGroup.rotation.y = cameraParams.theta;
-            }
-            
-            updatePhysics(delta);
-            updateAnimation(delta, isMoving);
-            updateCameraPosition();
-            
-            // P2P Sync
-            if (isGameActive) sendPlayerUpdate();
-            
-            // P2P Player Rendering
-            const lerpFactor = 5 * delta;
-            Object.values(remotePlayers).forEach(p => {
-                p.group.position.lerp(p.targetPos, lerpFactor);
-                let rotDiff = p.targetRot - p.group.rotation.y;
-                while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-                while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-                p.group.rotation.y += rotDiff * lerpFactor;
-                
-                // Anim
-                const speed = p.group.position.distanceTo(p.targetPos) / delta;
-                const isMoving = speed > 0.1;
-                const time = clock.getElapsedTime() * 12;
-                if (isMoving) {
-                    p.parts.leftLeg.rotation.x = Math.sin(time) * 0.8;
-                    p.parts.rightLeg.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                    p.parts.leftArm.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                    p.parts.rightArm.rotation.x = Math.sin(time) * 0.8;
-                } else {
-                    p.parts.leftLeg.rotation.x = THREE.MathUtils.lerp(p.parts.leftLeg.rotation.x, 0, lerpFactor);
-                    p.parts.rightLeg.rotation.x = THREE.MathUtils.lerp(p.parts.rightLeg.rotation.x, 0, lerpFactor);
-                    p.parts.leftArm.rotation.x = THREE.MathUtils.lerp(p.parts.leftArm.rotation.x, 0, lerpFactor);
-                    p.parts.rightArm.rotation.x = THREE.MathUtils.lerp(p.parts.rightArm.rotation.x, 0, lerpFactor);
-                }
-            });
-        }
-
-        function updateAnimation(delta, isMoving) {
-             const lerpFactor = 15 * delta;
-             const bodyParts = localAvatar.group.userData.parts; 
-             if (isMoving && isGrounded) {
-                const time = clock.getElapsedTime() * 12;
-                bodyParts.leftLeg.rotation.x = Math.sin(time) * 0.8;
-                bodyParts.rightLeg.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                bodyParts.leftArm.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                bodyParts.rightArm.rotation.x = Math.sin(time) * 0.8;
-            } else {
-                bodyParts.leftLeg.rotation.x = THREE.MathUtils.lerp(bodyParts.leftLeg.rotation.x, isGrounded ? 0 : 0.5, lerpFactor);
-                bodyParts.rightLeg.rotation.x = THREE.MathUtils.lerp(bodyParts.rightLeg.rotation.x, isGrounded ? 0 : -0.5, lerpFactor);
-                bodyParts.leftArm.rotation.x = THREE.MathUtils.lerp(bodyParts.leftArm.rotation.x, isGrounded ? 0 : Math.PI, lerpFactor);
-                bodyParts.rightArm.rotation.x = THREE.MathUtils.lerp(bodyParts.rightArm.rotation.x, isGrounded ? 0 : Math.PI, lerpFactor);
-            }
-        }
-        
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        function animate() {
-            requestAnimationFrame(animate);
-            const delta = Math.min(clock.getDelta(), 0.1);
-            if (isGameActive) updatePlayer(delta);
-            if(selectedObject && selectionHelper.visible) selectionHelper.update();
-            renderer.render(scene, camera);
-        }
-        animate();
-    </script>
-</body>
-</html>
+                NetState.mode = 'p
