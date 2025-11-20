@@ -62,7 +62,8 @@
             width: 100%; padding: 12px; background: #00a2ff; color: white; border: none;
             border-radius: 5px; font-size: 14px; font-weight: bold; cursor: pointer;
         }
-        .btn-primary:hover { background: #008ecc; }
+        .btn-primary:disabled { background: #555; cursor: not-allowed; color: #aaa; }
+        .btn-primary:hover:not(:disabled) { background: #008ecc; }
         .btn-secondary {
             flex: 1; padding: 12px; background: #444; color: white; border: 1px solid #555;
             border-radius: 5px; font-size: 14px; font-weight: bold; cursor: pointer;
@@ -179,10 +180,10 @@
             <!-- Server Section -->
             <div id="section-server" class="hidden">
                 <div class="input-group">
-                    <label>Server Link (URL)</label>
-                    <input type="text" id="server-url-input" placeholder="wss://myserver.com or https://..." value="wss://localhost:8080">
+                    <label>Server Link (WebSocket URL)</label>
+                    <input type="text" id="server-url-input" placeholder="wss://myserver.com" value="wss://blox-server-v4h9.onrender.com">
                 </div>
-                <p style="color:#888; font-style:italic;">Connects to a dedicated render server or WebSocket endpoint.</p>
+                <p style="color:#888; font-style:italic;">Connects to a standard WebSocket server. Sends/Receives JSON.</p>
                 <button class="btn-primary" id="connect-server-btn">Connect to Server</button>
             </div>
             
@@ -295,6 +296,8 @@
             const srvBtn = document.getElementById('mode-btn-server');
             const p2pSec = document.getElementById('section-p2p');
             const srvSec = document.getElementById('section-server');
+            const msgEl = document.getElementById('connection-msg');
+            msgEl.style.display = 'none'; // Clear errors on switch
 
             if(mode === 'p2p') {
                 p2pBtn.classList.add('active'); srvBtn.classList.remove('active');
@@ -342,7 +345,7 @@
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('toggle-editor-btn').style.display = 'block';
             hudEl.style.display = 'block';
-            codeEl.textContent = displayText;
+            codeEl.innerHTML = displayText;
             isGameActive = true;
         }
 
@@ -544,37 +547,92 @@
 
         // --- SERVER CONNECT LOGIC ---
         connectServerBtn.addEventListener('click', () => {
-            const url = document.getElementById('server-url-input').value.trim();
+            let url = document.getElementById('server-url-input').value.trim();
             if(!url) {
-                msgEl.textContent = "Please enter a URL.";
+                msgEl.textContent = "Please enter a WebSocket URL.";
                 msgEl.style.display = 'block';
                 return;
             }
+            
+            // Auto-fix protocol if user pasted https:// or http://
+            if (url.startsWith('https://')) {
+                url = url.replace('https://', 'wss://');
+            } else if (url.startsWith('http://')) {
+                url = url.replace('http://', 'ws://');
+            } else if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+                // Default to wss if no protocol specified
+                url = 'wss://' + url;
+            }
+
             localPlayerName = document.getElementById('username-input').value || "User";
             
             NetState.mode = 'server';
             NetState.serverUrl = url;
-            NetState.isHost = false; // Server is host
+            NetState.isHost = false; // In server mode, server is host.
             
-            log(`Connecting to Server Link: ${url}...`);
-            statusEl.textContent = `Connecting to Server...`;
-            
-            // Here you would typically Initialize a WebSocket or Pixel Streaming logic
-            // For now, we treat it as a "connected" state for the client simulation.
-            
-            // Example Mock WebSocket logic (Commented out since no backend):
-            // try {
-            //    NetState.serverSocket = new WebSocket(url);
-            //    NetState.serverSocket.onopen = () => { log("Socket Open"); };
-            // } catch(e) { log("Socket Error: " + e); }
+            // Disable button
+            connectServerBtn.disabled = true;
+            connectServerBtn.textContent = "Connecting...";
 
-            setTimeout(() => {
-                log("Server Connection Initiated (Simulated).");
-                statusEl.textContent = "Server: " + url;
-                initGame("SERVER");
-                // Hide Code HUD since we are on a server link
-                document.getElementById('room-hud').innerHTML = "SERVER LINK: <span style='font-size:14px'>" + url + "</span>";
-            }, 800);
+            log(`Attempting WebSocket connection to: ${url}...`);
+            statusEl.textContent = `Connecting...`;
+            msgEl.style.display = 'none';
+            
+            try {
+                NetState.serverSocket = new WebSocket(url);
+
+                NetState.serverSocket.onopen = () => {
+                    log("WebSocket Open! Authenticating...");
+                    statusEl.textContent = "Connected to Server";
+                    initGame("SERVER LINK: <span style='font-size:14px'>" + url + "</span>");
+                    connectServerBtn.disabled = false;
+                    connectServerBtn.textContent = "Connect to Server";
+                    
+                    // Optional: Send an auth/join packet immediately if your server expects it
+                    // NetState.serverSocket.send(JSON.stringify({ type: 'JOIN', name: localPlayerName }));
+                };
+
+                NetState.serverSocket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleData(data, null);
+                    } catch (e) {
+                        console.error("Failed to parse server message", e);
+                    }
+                };
+
+                NetState.serverSocket.onerror = (error) => {
+                    console.error("WebSocket Error", error);
+                    log("WebSocket connection failed.");
+                    if (!isGameActive) {
+                        msgEl.innerHTML = "Connection Failed. <br>If using Render free tier, the server might be waking up.<br>Wait 1 minute and try again.";
+                        msgEl.style.display = 'block';
+                        statusEl.textContent = "Connection Failed";
+                        
+                        // Reset state to allow retry
+                        NetState.mode = 'none';
+                        NetState.serverSocket = null;
+                        connectServerBtn.disabled = false;
+                        connectServerBtn.textContent = "Connect to Server";
+                    }
+                };
+
+                NetState.serverSocket.onclose = () => {
+                    log("WebSocket Closed");
+                    statusEl.textContent = "Disconnected";
+                    if(isGameActive) {
+                        alert("Server Disconnected");
+                        location.reload();
+                    }
+                };
+
+            } catch(e) {
+                console.error(e);
+                msgEl.textContent = "Error creating WebSocket: " + e.message;
+                msgEl.style.display = 'block';
+                connectServerBtn.disabled = false;
+                connectServerBtn.textContent = "Connect to Server";
+            }
         });
 
         document.getElementById('copy-btn').addEventListener('click', () => {
@@ -738,17 +796,9 @@
         
         // --- Network Game Sync ---
         function sendPlayerUpdate() {
-            if (!NetState.peer || !NetState.peer.id) {
-                // If in Server Mode, maybe send via WebSocket here
-                if(NetState.mode === 'server' && NetState.serverSocket) {
-                    // NetState.serverSocket.send(...)
-                }
-                return;
-            }
-            
             const data = {
                 type: 'PLAYER_UPDATE',
-                id: NetState.peer.id,
+                id: (NetState.peer && NetState.peer.id) ? NetState.peer.id : 'server-client',
                 x: playerGroup.position.x,
                 y: playerGroup.position.y,
                 z: playerGroup.position.z,
@@ -756,13 +806,24 @@
                 name: localPlayerName
             };
 
-            if (NetState.isHost) broadcast(data);
-            else if (NetState.conn) NetState.conn.send(data);
+            if (NetState.mode === 'server') {
+                // Send via WebSocket if open
+                if (NetState.serverSocket && NetState.serverSocket.readyState === WebSocket.OPEN) {
+                    NetState.serverSocket.send(JSON.stringify(data));
+                }
+            }
+            else if (NetState.mode === 'p2p-host') {
+                broadcast(data);
+            }
+            else if (NetState.mode === 'p2p-client' && NetState.conn) {
+                NetState.conn.send(data);
+            }
         }
 
         function updateRemotePlayer(id, data) {
             if (NetState.peer && id === NetState.peer.id) return;
-            
+            if (NetState.mode === 'server' && id === 'server-client') return; // Don't process own echo
+
             let p = remotePlayers[id];
             if (!p) {
                 log("New Player: " + data.name);
@@ -901,14 +962,19 @@
                     anchored: true, canCollide: true
                 };
 
-                if (NetState.mode === 'p2p-host' || NetState.mode === 'server') {
-                    // If server mode or host, we assume authority for now
+                if (NetState.mode === 'p2p-host') {
+                    // Host assumes authority
                     const id = generateId();
                     const finalData = { ...data, id: id };
                     spawnRemotePart(id, finalData);
                     broadcast({ type: 'WORLD_CREATE', data: finalData });
-                } else if (NetState.conn) {
+                } else if (NetState.mode === 'p2p-client' && NetState.conn) {
                     NetState.conn.send({ type: 'REQ_WORLD_CREATE', data: data });
+                } else if (NetState.mode === 'server' && NetState.serverSocket) {
+                    // Server Mode: Send request to socket
+                     if (NetState.serverSocket.readyState === WebSocket.OPEN) {
+                        NetState.serverSocket.send(JSON.stringify({ type: 'REQ_WORLD_CREATE', data: data }));
+                     }
                 }
             },
             
@@ -960,10 +1026,15 @@
                         anchored: obj.userData.anchored,
                         canCollide: obj.userData.canCollide
                     };
-                    if (NetState.mode === 'p2p-host' || NetState.mode === 'server') {
+                    
+                    const payload = { type: 'REQ_WORLD_UPDATE', id: obj.userData.dbId, data: data };
+
+                    if (NetState.mode === 'p2p-host') {
                          broadcast({ type: 'WORLD_UPDATE', id: obj.userData.dbId, data: data });
-                    } else if (NetState.conn) {
-                         NetState.conn.send({ type: 'REQ_WORLD_UPDATE', id: obj.userData.dbId, data: data });
+                    } else if (NetState.mode === 'p2p-client' && NetState.conn) {
+                         NetState.conn.send(payload);
+                    } else if (NetState.mode === 'server' && NetState.serverSocket) {
+                        NetState.serverSocket.send(JSON.stringify(payload));
                     }
                 }
             },
@@ -982,11 +1053,15 @@
             deleteSelected: function() {
                 if(selectedObject) {
                     if (selectedObject.userData.dbId) {
-                        if(NetState.mode === 'p2p-host' || NetState.mode === 'server') {
+                        const payload = { type: 'REQ_WORLD_DELETE', id: selectedObject.userData.dbId };
+
+                        if(NetState.mode === 'p2p-host') {
                             deleteWorldPart(selectedObject.userData.dbId);
                             broadcast({ type: 'WORLD_DELETE', id: selectedObject.userData.dbId });
-                        } else if (NetState.conn) {
-                            NetState.conn.send({ type: 'REQ_WORLD_DELETE', id: selectedObject.userData.dbId });
+                        } else if (NetState.mode === 'p2p-client' && NetState.conn) {
+                            NetState.conn.send(payload);
+                        } else if (NetState.mode === 'server' && NetState.serverSocket) {
+                             NetState.serverSocket.send(JSON.stringify(payload));
                         }
                     }
                     else selectedObject.parent.remove(selectedObject);
@@ -1030,6 +1105,7 @@
         });
         
         window.addEventListener('keydown', (event) => {
+            if (!event.key) return; // Safety Check
             const key = event.key.toLowerCase();
             if (keys.hasOwnProperty(key)) keys[key] = true;
             if (event.key === " ") keys[" "] = true;
@@ -1045,6 +1121,7 @@
             }
         });
         window.addEventListener('keyup', (e) => {
+            if (!e.key) return; // Safety Check
             const key = e.key.toLowerCase();
             if (keys.hasOwnProperty(key)) keys[key] = false;
             if (e.key === " ") keys[" "] = false;
