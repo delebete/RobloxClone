@@ -258,7 +258,7 @@
                 <input type="file" id="load-file-input" accept=".json" style="display:none" onchange="window.gameEditor.loadGame(this)">
             </div>
 
-            <button class="menu-btn btn-leave" onclick="location.reload()">LEAVE GAME</button>
+            <button class="menu-btn btn-leave" onclick="window.gameEditor.leaveGame()">LEAVE GAME</button>
         </div>
     </div>
 
@@ -431,6 +431,7 @@
                     break;
 
                 case 'PLAYER_LEAVE':
+                    log(`Removing Player: ${data.id}`);
                     removeRemotePlayer(data.id);
                     break;
                     
@@ -1231,6 +1232,12 @@
                 transformControl.setMode(mode);
                 document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
                 document.getElementById('mode-' + mode).classList.add('active');
+            },
+            
+            leaveGame: function() {
+                if (NetState.serverSocket) NetState.serverSocket.close();
+                if (NetState.peer) NetState.peer.destroy();
+                location.reload();
             }
         };
 
@@ -1400,7 +1407,6 @@
                 updateCameraPosition();
                 return; 
             }
-            if (isMenuOpen) return; // Stop movement if menu is open
 
             const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
             const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0,1,0));
