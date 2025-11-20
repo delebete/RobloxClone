@@ -57,6 +57,9 @@
             border-radius: 5px; font-size: 14px; font-weight: bold; cursor: pointer;
         }
         .btn-secondary:hover { background: #555; }
+        .btn-danger {
+             background: #e74c3c; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 10px;
+        }
         
         #host-id-display-container { display: none; margin-top: 15px; background: #222; padding: 15px; border-radius: 5px; border: 1px solid #444; }
         #host-id-text { color: #00ffaa; font-family: monospace; font-size: 24px; letter-spacing: 2px; font-weight: bold; margin: 5px 0; }
@@ -159,7 +162,10 @@
                 <button id="copy-btn">Copy to Clipboard</button>
             </div>
             
-            <p id="connection-msg" style="color:#ff4444; font-size:12px; margin-top:10px; display:none;"></p>
+            <div id="connection-error-container" style="display:none; margin-top: 10px; border-top: 1px solid #555; padding-top: 10px;">
+                <p id="connection-msg" style="color:#ff4444; font-size:12px; margin: 0 0 5px 0;"></p>
+                <button class="btn-danger" id="retry-btn" style="display:none;">Retry Connection</button>
+            </div>
         </div>
     </div>
 
@@ -272,13 +278,21 @@
             code: null
         };
 
-        // FIX: Added OpenRelay (Public TURN) servers to bypass strict firewalls
+        // FIX: Improved ICE Server list with redundancies
         const peerConfig = {
+            debug: 2, // Print errors to console
             config: {
                 iceServers: [
                     // Google Public STUN
+                    { urls: 'stun:stun.l.google.com:19302' },
                     { urls: 'stun:stun1.l.google.com:19302' },
                     { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' },
+                    
+                    // Mozilla Public STUN (Backup)
+                    { urls: 'stun:stun.services.mozilla.com' },
+                    
                     // OpenRelay Public TURN (The "Public One")
                     {
                         urls: "turn:openrelay.metered.ca:80",
@@ -307,8 +321,10 @@
         // --- P2P CONNECTION LOGIC ---
         const hostBtn = document.getElementById('host-btn');
         const joinBtn = document.getElementById('join-btn');
+        const retryBtn = document.getElementById('retry-btn');
         const statusEl = document.getElementById('network-status');
         const msgEl = document.getElementById('connection-msg');
+        const errContainer = document.getElementById('connection-error-container');
         const hudEl = document.getElementById('room-hud');
         const codeEl = document.getElementById('room-code-display');
 
@@ -401,7 +417,7 @@
              const code = Math.floor(100000 + Math.random() * 900000).toString();
              NetState.code = code;
              
-             // FIX: Pass peerConfig to Host
+             statusEl.textContent = "Connecting to Signaling Server...";
              NetState.peer = new window.Peer(APP_PREFIX + code, peerConfig);
              
              NetState.peer.on('error', (err) => {
@@ -410,8 +426,8 @@
                      createHost(); // Retry with new code
                  } else {
                      console.error(err);
-                     msgEl.textContent = "Connection Error: " + err.type;
-                     msgEl.style.display = 'block';
+                     msgEl.textContent = "Host Error: " + err.type;
+                     errContainer.style.display = 'block';
                  }
              });
 
@@ -426,12 +442,12 @@
             });
 
             NetState.peer.on('connection', (conn) => {
-                log("New Player Connecting...");
-                NetState.connections.push(conn);
-                
-                conn.on('data', (data) => handleData(data, conn));
+                log("New Player Negotiating...");
                 
                 conn.on('open', () => {
+                    log("Player Connected! " + conn.peer);
+                    NetState.connections.push(conn);
+                    
                     // Send Welcome Package
                     const players = Object.values(remotePlayers).map(p => ({
                         id: p.id, x: p.group.position.x, y: p.group.position.y, z: p.group.position.z, 
@@ -459,16 +475,12 @@
                     conn.send({ type: 'WELCOME', players: players, world: world });
                 });
 
+                conn.on('data', (data) => handleData(data, conn));
+
                 conn.on('close', () => {
                     log("Player Disconnected: " + conn.peer);
-                    
-                    // 1. Remove connection from active list
                     NetState.connections = NetState.connections.filter(c => c !== conn);
-                    
-                    // 2. Remove the player locally (Host side)
                     removeRemotePlayer(conn.peer);
-                    
-                    // 3. Tell everyone else to remove this player
                     broadcast({ type: 'PLAYER_LEAVE', id: conn.peer });
                 });
             });
@@ -482,28 +494,44 @@
         });
 
         // --- JOINING ---
-        joinBtn.addEventListener('click', () => {
-            const codeInput = document.getElementById('host-id-input').value.trim();
-            if (!codeInput || codeInput.length !== 6) {
-                msgEl.textContent = "Please enter a valid 6-digit code.";
-                msgEl.style.display = 'block';
-                return;
-            }
-            
-            localPlayerName = document.getElementById('username-input').value || "Guest";
+        function showError(msg, allowRetry = true) {
+            errContainer.style.display = 'block';
+            msgEl.textContent = msg;
+            if(allowRetry) retryBtn.style.display = 'inline-block';
+        }
+
+        function joinGame(codeInput) {
+             localPlayerName = document.getElementById('username-input').value || "Guest";
             NetState.isHost = false;
             NetState.code = codeInput;
-            statusEl.textContent = "Connecting to " + codeInput;
             
-            // FIX: Pass peerConfig to Client (undefined ID lets PeerJS generate one)
+            statusEl.textContent = "Connecting to Signaling...";
+            errContainer.style.display = 'none';
+            
+            // Create Client Peer
+            if (NetState.peer) NetState.peer.destroy();
             NetState.peer = new window.Peer(undefined, peerConfig); 
             
             NetState.peer.on('open', (id) => {
-                const hostId = APP_PREFIX + codeInput;
-                NetState.conn = NetState.peer.connect(hostId);
+                log("Signaling Connected. ID: " + id);
+                statusEl.textContent = "Finding Host: " + codeInput + "...";
                 
+                const hostId = APP_PREFIX + codeInput;
+                NetState.conn = NetState.peer.connect(hostId, { reliable: true });
+                
+                // Fallback timeout
+                const connTimeout = setTimeout(() => {
+                    if(!NetState.conn || !NetState.conn.open) {
+                        log("Connection Timeout.");
+                        statusEl.textContent = "Timeout.";
+                        showError("Connection timed out. (Restricted Network?)");
+                        if(NetState.conn) NetState.conn.close();
+                    }
+                }, 15000); // 15s timeout
+
                 NetState.conn.on('open', () => {
-                    log("Connected to Host!");
+                    clearTimeout(connTimeout);
+                    log("Negotiation Successful! Joining...");
                     statusEl.textContent = "Connected to " + codeInput;
                     initGame(codeInput);
                 });
@@ -514,19 +542,29 @@
                     location.reload();
                 });
                 NetState.conn.on('error', (err) => {
-                    console.error(err);
-                    msgEl.style.display = 'block';
-                    msgEl.textContent = "Connection Failed. Check Code.";
+                    console.error("Conn Error:", err);
                 });
-                
-                // Fallback timeout - Increased to 10s for slow STUN negotiation
-                setTimeout(() => {
-                    if(!NetState.conn.open) {
-                        msgEl.style.display = 'block';
-                        msgEl.textContent = "Connection timed out. (Are you on a restricted network?)";
-                    }
-                }, 10000);
             });
+            
+            NetState.peer.on('error', (err) => {
+                console.error("Peer Error:", err);
+                statusEl.textContent = "Error";
+                showError("Network Error: " + err.type);
+            });
+        }
+
+        joinBtn.addEventListener('click', () => {
+            const codeInput = document.getElementById('host-id-input').value.trim();
+            if (!codeInput || codeInput.length !== 6) {
+                showError("Please enter a valid 6-digit code.", false);
+                return;
+            }
+            joinGame(codeInput);
+        });
+        
+        retryBtn.addEventListener('click', () => {
+             const codeInput = document.getElementById('host-id-input').value.trim();
+             if(codeInput) joinGame(codeInput);
         });
 
         document.getElementById('copy-btn').addEventListener('click', () => {
