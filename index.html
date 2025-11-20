@@ -320,18 +320,29 @@
         function createNameTag(name) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = 256; canvas.height = 64;
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillRect(0,0,256,64); // Background rect for better visibility
-            ctx.font = 'Bold 40px Arial';
+            canvas.width = 512; canvas.height = 128; // Larger resolution for sharper text
+            
+            // Text Shadow/Outline for readability
+            ctx.font = 'Bold 60px Arial';
             ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            
+            // Background pill (optional, can make transparent)
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            const textWidth = ctx.measureText(name).width;
+            const bgWidth = textWidth + 40;
+            ctx.roundRect(256 - bgWidth/2, 64 - 40, bgWidth, 80, 20);
+            ctx.fill();
+
             ctx.fillStyle = 'white';
-            ctx.fillText(name, 128, 48);
+            ctx.fillText(name, 256, 64);
+            
             const tex = new THREE.CanvasTexture(canvas);
             const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
             const sprite = new THREE.Sprite(spriteMat);
-            sprite.scale.set(4, 1, 1);
-            sprite.position.y = 3.2; // Higher
+            sprite.scale.set(6, 1.5, 1); // Wider scale for longer names
+            sprite.position.y = 5.5; // FIXED: Moved up above head (Head top is approx 5.2)
+            sprite.name = "nametag"; // Naming it allows us to find and replace it later
             return sprite;
         }
 
@@ -339,6 +350,7 @@
             const group = new THREE.Group();
             const parts = {};
             
+            // ... (Geometry definitions remain the same) ...
             const torsoGeo = new THREE.BoxGeometry(2, 2, 1);
             const limbGeo = new THREE.BoxGeometry(1, 2, 1);
             const headGeo = new THREE.CylinderGeometry(0.6, 0.6, 1.2, 32);
@@ -476,33 +488,51 @@
                 snapshot.forEach((doc) => {
                     const data = doc.data();
                     const uid = doc.id;
-                    if (uid === localPlayerId) return; // Don't render self
+                    if (uid === localPlayerId) return; 
                     
                     currentIds.push(uid);
                     
-                    if (!remotePlayers[uid]) {
+                    let p = remotePlayers[uid];
+                    
+                    // 1. Spawn if not exists
+                    if (!p) {
                         log("Found new player: " + (data.name || "Guest"));
                         const remote = createAvatar(false);
+                        // Initial tag creation
                         remote.group.add(createNameTag(data.name || "Guest"));
+                        
                         remotePlayersGroup.add(remote.group);
                         remotePlayers[uid] = { 
                             group: remote.group, 
                             targetPos: new THREE.Vector3(), 
                             targetRot: 0,
                             parts: remote.parts,
-                            lastUpdate: Date.now() // Init timestamp
+                            lastUpdate: Date.now(),
+                            currentName: data.name || "Guest"
                         };
+                        p = remotePlayers[uid];
                     }
-                    const p = remotePlayers[uid];
                     
+                    // 2. Update Name Tag if name changed in DB (Fixes "Guest" issue)
+                    const newName = data.name || "Guest";
+                    if (p.currentName !== newName) {
+                        log(`Player ${uid} changed name to ${newName}`);
+                        const oldTag = p.group.getObjectByName("nametag");
+                        if (oldTag) p.group.remove(oldTag);
+                        
+                        p.group.add(createNameTag(newName));
+                        p.currentName = newName;
+                    }
+                    
+                    // 3. Update Position Targets
                     if (data.x !== undefined) {
                         p.targetPos.set(data.x, data.y, data.z);
                         p.targetRot = data.rot;
-                        p.lastUpdate = Date.now(); // Update timestamp on data receive
+                        p.lastUpdate = Date.now(); 
                     }
                 });
                 
-                // Handle explicit removals (if doc is deleted)
+                // Cleanup
                 Object.keys(remotePlayers).forEach(uid => {
                     if (!currentIds.includes(uid)) {
                         log("Player left: " + uid);
