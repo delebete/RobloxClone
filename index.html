@@ -8,6 +8,14 @@
         body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #232527; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
         
+        /* Debugger */
+        #debug-console {
+            position: absolute; top: 10px; left: 10px; width: 300px; height: 150px;
+            background: rgba(0, 0, 0, 0.7); color: #0f0; font-family: monospace; font-size: 11px;
+            padding: 10px; border-radius: 4px; pointer-events: none; overflow-y: auto; z-index: 300;
+            white-space: pre-wrap;
+        }
+
         /* Login Modal */
         #login-screen {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -27,6 +35,8 @@
             border-radius: 5px; font-size: 16px; font-weight: bold; cursor: pointer;
         }
         .login-btn:hover { background: #008ecc; }
+        
+        #network-status { position: absolute; bottom: 10px; left: 10px; color: #888; font-size: 12px; pointer-events: none; z-index: 201; }
 
         /* Game UI */
         #ui-layer {
@@ -100,8 +110,12 @@
             <h1>Blox World</h1>
             <input type="text" id="username-input" placeholder="Enter Username" maxlength="12">
             <button class="login-btn" id="join-btn">Join Game</button>
+            <p id="connection-msg" style="color:#888; font-size:12px; margin-top:10px;"></p>
         </div>
     </div>
+
+    <div id="network-status">Initializing...</div>
+    <div id="debug-console">System Ready...</div>
 
     <div id="crosshair"></div>
 
@@ -194,7 +208,15 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
         import { getFirestore, collection, doc, setDoc, addDoc, onSnapshot, deleteDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 
-        // --- Firebase Setup ---
+        // --- Debug Logger ---
+        function log(msg) {
+            const consoleEl = document.getElementById('debug-console');
+            consoleEl.innerText += `\n> ${msg}`;
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+            console.log(msg);
+        }
+
+        // --- FIREBASE CONFIGURATION (USER PROVIDED) ---
         const firebaseConfig = {
           apiKey: "AIzaSyCzUQXDXgsNt1QZqqeoNDQ4PBfQNjnS_Ag",
           authDomain: "robloxclone-d2bd3.firebaseapp.com",
@@ -202,12 +224,24 @@
           storageBucket: "robloxclone-d2bd3.firebasestorage.app",
           messagingSenderId: "346879775122",
           appId: "1:346879775122:web:4c0cd9ecfc0d540b41314b"
+        };
+
+        // --- INIT FIREBASE ---
+        let app, auth, db;
+        let isOffline = false;
+
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            document.getElementById('network-status').textContent = "Connecting to Server...";
+            log("Firebase Initialized. Waiting for Auth...");
+        } catch (e) {
+            console.error("Firebase Init Error:", e);
+            isOffline = true;
+            document.getElementById('network-status').textContent = "Offline Mode";
+            log("ERROR: Firebase failed to init. " + e.message);
         }
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // --- Global Game State ---
         let localPlayerId = null;
@@ -287,18 +321,17 @@
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             canvas.width = 256; canvas.height = 64;
-            ctx.font = 'Bold 40px Arial';
             ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(0,0,256,64); // Background rect for better visibility
+            ctx.font = 'Bold 40px Arial';
             ctx.textAlign = "center";
-            const textWidth = ctx.measureText(name).width;
-            ctx.fillRect(128 - textWidth/2 - 10, 12, textWidth + 20, 40);
             ctx.fillStyle = 'white';
-            ctx.fillText(name, 128, 44);
+            ctx.fillText(name, 128, 48);
             const tex = new THREE.CanvasTexture(canvas);
-            const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+            const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
             const sprite = new THREE.Sprite(spriteMat);
             sprite.scale.set(4, 1, 1);
-            sprite.position.y = 2.8; // Above head
+            sprite.position.y = 3.2; // Higher
             return sprite;
         }
 
@@ -355,39 +388,51 @@
             const nameInput = document.getElementById('username-input').value.trim();
             if (!nameInput) return alert("Please enter a name!");
             localPlayerName = nameInput;
+            
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('toggle-editor-btn').style.display = 'block';
             
-            // Use custom token if available, else anonymous
+            if (isOffline) {
+                isGameActive = true;
+                localPlayerId = 'offline-user';
+                log("Playing in Offline Mode");
+                return; 
+            }
+
             try {
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
+                log("Attempting to sign in...");
+                await signInAnonymously(auth);
             } catch (e) {
-                console.error("Auth failed:", e);
-                alert("Authentication failed.");
+                console.error("Auth failed, forcing offline:", e);
+                isOffline = true;
+                isGameActive = true; 
+                document.getElementById('network-status').textContent = "Offline (Auth Failed)";
+                log("Auth Failed. Switched to Offline.");
             }
         });
 
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                localPlayerId = user.uid;
-                isGameActive = true;
-                startPlayerSync();
-                startWorldSync();
-            }
-        });
+        if (!isOffline) {
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    localPlayerId = user.uid;
+                    isGameActive = true;
+                    document.getElementById('network-status').textContent = "Online";
+                    log("Signed in as: " + user.uid);
+                    startPlayerSync();
+                    startWorldSync();
+                }
+            });
+        }
 
         let lastSyncTime = 0;
         function syncLocalPlayer() {
-            if (!localPlayerId || !isGameActive) return;
+            if (isOffline || !localPlayerId || !isGameActive) return;
             const now = Date.now();
             if (now - lastSyncTime < 100) return; 
             
             lastSyncTime = now;
-            const playerRef = doc(db, 'artifacts', appId, 'public', 'data', 'players', localPlayerId);
+            // Using Simplified 'players' collection
+            const playerRef = doc(db, 'players', localPlayerId); 
             setDoc(playerRef, {
                 x: playerGroup.position.x,
                 y: playerGroup.position.y,
@@ -398,18 +443,45 @@
             }, { merge: true });
         }
 
+        // --- HANDLE DISCONNECT ---
+        window.addEventListener('beforeunload', () => {
+            if (localPlayerId && !isOffline) {
+                // Attempt to delete player doc on exit (Best effort)
+                // Note: This relies on the browser sending the request before closing
+                deleteDoc(doc(db, 'players', localPlayerId));
+            }
+        });
+
+        // --- STALE PLAYER CLEANUP ---
+        // If a player crashes, they won't delete their doc. 
+        // This loop removes players locally if they haven't moved in 10 seconds.
+        setInterval(() => {
+            const now = Date.now();
+            Object.keys(remotePlayers).forEach(uid => {
+                const p = remotePlayers[uid];
+                if (now - p.lastUpdate > 10000) { // 10 seconds timeout
+                    console.log("Removing stale player:", uid);
+                    remotePlayersGroup.remove(p.group);
+                    delete remotePlayers[uid];
+                }
+            });
+        }, 2000);
+
         function startPlayerSync() {
-            const playersRef = collection(db, 'artifacts', appId, 'public', 'data', 'players');
+            if (isOffline) return;
+            log("Starting Player Sync...");
+            const playersRef = collection(db, 'players'); 
             onSnapshot(playersRef, (snapshot) => {
                 const currentIds = [];
                 snapshot.forEach((doc) => {
                     const data = doc.data();
                     const uid = doc.id;
-                    if (uid === localPlayerId) return; 
+                    if (uid === localPlayerId) return; // Don't render self
                     
                     currentIds.push(uid);
                     
                     if (!remotePlayers[uid]) {
+                        log("Found new player: " + (data.name || "Guest"));
                         const remote = createAvatar(false);
                         remote.group.add(createNameTag(data.name || "Guest"));
                         remotePlayersGroup.add(remote.group);
@@ -417,32 +489,42 @@
                             group: remote.group, 
                             targetPos: new THREE.Vector3(), 
                             targetRot: 0,
-                            parts: remote.parts 
+                            parts: remote.parts,
+                            lastUpdate: Date.now() // Init timestamp
                         };
                     }
                     const p = remotePlayers[uid];
-                    p.targetPos.set(data.x, data.y, data.z);
-                    p.targetRot = data.rot;
+                    
+                    if (data.x !== undefined) {
+                        p.targetPos.set(data.x, data.y, data.z);
+                        p.targetRot = data.rot;
+                        p.lastUpdate = Date.now(); // Update timestamp on data receive
+                    }
                 });
                 
+                // Handle explicit removals (if doc is deleted)
                 Object.keys(remotePlayers).forEach(uid => {
                     if (!currentIds.includes(uid)) {
+                        log("Player left: " + uid);
                         remotePlayersGroup.remove(remotePlayers[uid].group);
                         delete remotePlayers[uid];
                     }
                 });
             }, (error) => {
-                console.warn("Player sync error (likely permission):", error.message);
+                log("SYNC ERROR: " + error.message);
+                console.warn("Sync Error:", error);
             });
         }
 
         function startWorldSync() {
-            const worldRef = collection(db, 'artifacts', appId, 'public', 'data', 'worldObjects');
+            if (isOffline) return;
+            log("Starting World Sync...");
+            const worldRef = collection(db, 'worldObjects');
             onSnapshot(worldRef, (snapshot) => {
                 snapshot.docChanges().forEach((change) => {
                     const data = change.doc.data();
                     const id = change.doc.id;
-                    if (change.type === "added") spawnRemotePart(id, data);
+                    if (change.type === "added") { spawnRemotePart(id, data); }
                     if (change.type === "modified") updateRemotePart(id, data);
                     if (change.type === "removed") {
                         const mesh = worldObjects[id];
@@ -452,9 +534,7 @@
                         }
                     }
                 });
-            }, (error) => {
-                console.warn("World sync error (likely permission):", error.message);
-            });
+            }, (error) => log("WORLD ERROR: " + error.message));
         }
 
         function spawnRemotePart(id, data) {
@@ -506,10 +586,9 @@
         const playerDirection = new THREE.Vector3();
         const clock = new THREE.Clock();
         
-        // Controls & Camera
+        // Controls & Camera - DEFINE FUNCTION BEFORE USE
         const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, minDistance: 2, maxDistance: 80, sensitivity: 0.002, offsetY: 4.5 };
         
-        // Define updateCameraPosition explicitly at module level
         function updateCameraPosition() {
             cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, cameraParams.targetDistance, 0.2);
             const r = cameraParams.distance, phi = cameraParams.phi, theta = cameraParams.theta;
@@ -568,9 +647,10 @@
             
             addWorldPart: function(type, overrideData) {
                 if (!isEditing) return;
-                if (!isGameActive) return alert("Not connected!");
+                if (isOffline) return this.createObject(type, 'world', overrideData); // Fallback for local
+
                 const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5)); 
-                addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'worldObjects'), {
+                addDoc(collection(db, 'worldObjects'), { // Simplified Path
                     type: type,
                     px: spawnPos.x, py: spawnPos.y, pz: spawnPos.z,
                     rx: 0, ry: 0, rz: 0,
@@ -581,7 +661,10 @@
             },
             
             createObject: function(type, mode, data) {
-                if (mode === 'world') return; 
+                // In multiplayer mode, world objects are created via Firestore listener. 
+                // This function is used for local Avatar parts OR offline world parts.
+                if (mode === 'world' && !isOffline && !data) return; 
+
                 let geometry;
                 if (type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
                 else if (type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
@@ -589,11 +672,28 @@
                 const mat = new THREE.MeshStandardMaterial({ color: color });
                 const mesh = new THREE.Mesh(geometry, mat);
                 mesh.castShadow = true;
-                mesh.userData = { isCustom: true, mode: 'avatar', anchored: false, canCollide: true };
-                const parent = bodyParts[document.getElementById('parent-selector').value];
+                
+                // Setup metadata
+                mesh.userData = { 
+                    isCustom: true, 
+                    mode: mode, 
+                    anchored: (mode === 'world'), 
+                    canCollide: true,
+                    velocity: new THREE.Vector3() 
+                };
+
+                let parent;
+                if (mode === 'world') parent = worldGroup;
+                else parent = bodyParts[document.getElementById('parent-selector').value];
+                
                 parent.add(mesh);
+                
                 if (data) { mesh.position.copy(data.pos); mesh.rotation.copy(data.rot); mesh.scale.copy(data.scl); } 
-                else { mesh.position.set(0, 0, 1); }
+                else if (mode === 'world') {
+                     const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
+                     mesh.position.copy(playerGroup.position).add(fwd.multiplyScalar(5)).addScalar(0, 2, 0);
+                } else { mesh.position.set(0, 0, 1); }
+                
                 this.selectObject(mesh);
             },
 
@@ -613,8 +713,8 @@
                 transformControl.detach(); selectionHelper.visible = false; selectedObject = null;
             },
             captureTransformEnd: function(obj) {
-                if (obj.userData.mode === 'world' && obj.userData.dbId) {
-                    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'worldObjects', obj.userData.dbId);
+                if (obj.userData.mode === 'world' && obj.userData.dbId && !isOffline) {
+                    const ref = doc(db, 'worldObjects', obj.userData.dbId); // Simplified Path
                     updateDoc(ref, {
                         px: obj.position.x, py: obj.position.y, pz: obj.position.z,
                         rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
@@ -626,18 +726,18 @@
             setAnchored: function(val) {
                 if(selectedObject) {
                     selectedObject.userData.anchored = val;
-                    if(selectedObject.userData.dbId) updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'worldObjects', selectedObject.userData.dbId), { anchored: val });
+                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { anchored: val }); // Simplified Path
                 }
             },
             setCanCollide: function(val) {
                 if(selectedObject) {
                     selectedObject.userData.canCollide = val;
-                    if(selectedObject.userData.dbId) updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'worldObjects', selectedObject.userData.dbId), { canCollide: val });
+                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { canCollide: val }); // Simplified Path
                 }
             },
             deleteSelected: function() {
                 if(selectedObject) {
-                    if (selectedObject.userData.dbId) deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'worldObjects', selectedObject.userData.dbId));
+                    if (selectedObject.userData.dbId && !isOffline) deleteDoc(doc(db, 'worldObjects', selectedObject.userData.dbId)); // Simplified Path
                     else selectedObject.parent.remove(selectedObject);
                     this.clearSelection();
                 }
@@ -655,7 +755,6 @@
             if (!event.value && selectedObject) window.gameEditor.captureTransformEnd(selectedObject);
         });
 
-        // Fix: Bind toggle context
         document.getElementById('toggle-editor-btn').addEventListener('click', () => window.gameEditor.toggle());
         document.getElementById('baseplate-color-picker').addEventListener('input', (e) => ground.material.color.set(e.target.value));
         
@@ -727,7 +826,7 @@
         function updatePhysics(delta) {
             worldGroup.children.forEach(part => {
                 if (part.userData.isWorld && !part.userData.anchored) {
-                     part.updateMatrixWorld(); // Fix for vibrating physics
+                     part.updateMatrixWorld(); 
                      if (!part.userData.velocity) part.userData.velocity = new THREE.Vector3();
                      part.userData.velocity.y += GRAVITY * delta;
                      part.position.addScaledVector(part.userData.velocity, delta);
