@@ -39,6 +39,37 @@
         .login-box h1 { color: white; margin-top: 0; margin-bottom: 5px;}
         .login-box p { color: #aaa; font-size: 12px; margin-bottom: 20px; }
         
+        /* ESC Menu */
+        #esc-menu {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.85); z-index: 500; display: none;
+            justify-content: center; align-items: center; flex-direction: column;
+            backdrop-filter: blur(5px);
+        }
+        .menu-container {
+            background: #2c2f33; padding: 30px; border-radius: 15px; width: 400px;
+            text-align: center; border: 1px solid #444; box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+        .menu-title { color: white; font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+        .menu-username { color: #00a2ff; font-size: 18px; margin-bottom: 20px; font-family: monospace; }
+        
+        #avatar-preview-container {
+            width: 200px; height: 200px; background: #111; margin: 0 auto 20px auto;
+            border-radius: 10px; border: 2px solid #444; overflow: hidden; position: relative;
+        }
+        
+        .menu-btn {
+            width: 100%; padding: 12px; margin: 5px 0; border-radius: 5px; border: none;
+            font-weight: bold; font-size: 14px; cursor: pointer; transition: 0.2s;
+            background: #444; color: white;
+        }
+        .menu-btn:hover { background: #555; transform: translateY(-2px); }
+        .btn-leave { background: #e74c3c; }
+        .btn-leave:hover { background: #c0392b; }
+        .btn-save { background: #2ecc71; }
+        .btn-save:hover { background: #27ae60; }
+        .btn-resume { background: #00a2ff; margin-top: 15px; }
+        
         /* Mode Switcher */
         .mode-switch-container {
             display: flex; justify-content: center; margin-bottom: 20px;
@@ -204,8 +235,30 @@
         <p><span class="key">Shift</span> Toggle Shift Lock</p>
         <p><span class="key">Right Click (Hold)</span> Rotate Camera</p>
         <p><span class="key">Scroll</span> Zoom</p>
+        <p><span class="key">ESC</span> Menu</p>
         <div style="margin-top: 10px; border-top: 1px solid #666; padding-top: 10px;">
             <div>Shift Lock: <span id="shift-status" class="status-badge off">OFF</span></div>
+        </div>
+    </div>
+
+    <!-- ESC Menu -->
+    <div id="esc-menu">
+        <div class="menu-container">
+            <div class="menu-title">PAUSED</div>
+            <div class="menu-username" id="menu-username-display">Guest</div>
+            
+            <div id="avatar-preview-container"></div>
+            <p style="font-size:10px; color:#888; margin-top:-15px; margin-bottom:15px;">Avatar Preview</p>
+
+            <button class="menu-btn btn-resume" onclick="window.gameEditor.toggleMenu()">RESUME</button>
+            <button class="menu-btn btn-save" onclick="window.gameEditor.saveGame()">SAVE GAME (.json)</button>
+            
+            <div style="display:flex; gap:5px; width:100%; margin: 5px 0;">
+                <button class="menu-btn" style="flex:1;" onclick="document.getElementById('load-file-input').click()">LOAD GAME</button>
+                <input type="file" id="load-file-input" accept=".json" style="display:none" onchange="window.gameEditor.loadGame(this)">
+            </div>
+
+            <button class="menu-btn btn-leave" onclick="location.reload()">LEAVE GAME</button>
         </div>
     </div>
 
@@ -351,6 +404,9 @@
             hudEl.style.display = 'block';
             codeEl.innerHTML = displayText;
             isGameActive = true;
+            
+            // Update ESC Menu name
+            document.getElementById('menu-username-display').textContent = localPlayerName;
         }
 
         function handleData(data, senderConn) {
@@ -698,6 +754,21 @@
         // --- Camera Variables ---
         const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, minDistance: 2, maxDistance: 80, sensitivity: 0.002, offsetY: 4.5 };
 
+        // --- PREVIEW AVATAR SCENE (For ESC Menu) ---
+        const previewScene = new THREE.Scene();
+        previewScene.background = new THREE.Color(0x111111);
+        const previewCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+        previewCamera.position.set(0, 3, 6);
+        previewCamera.lookAt(0, 3, 0);
+        const previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        previewRenderer.setSize(200, 200);
+        document.getElementById('avatar-preview-container').appendChild(previewRenderer.domElement);
+        const previewLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        previewLight.position.set(2, 5, 5);
+        previewScene.add(previewLight);
+        previewScene.add(new THREE.AmbientLight(0xffffff, 0.5));
+        let previewAvatar = null;
+
         // --- Helper Functions ---
         function updateCameraPosition() {
             cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, cameraParams.targetDistance, 0.2);
@@ -929,6 +1000,7 @@
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
         let isEditing = false, activeTab = 'avatar', selectedObject = null;
+        let isMenuOpen = false;
         
         // --- EDITOR MODIFICATIONS ---
         window.gameEditor = {
@@ -956,20 +1028,98 @@
                     this.clearSelection();
                 }
             },
+            // --- MENU FUNCTIONS ---
+            toggleMenu: function() {
+                isMenuOpen = !isMenuOpen;
+                const menu = document.getElementById('esc-menu');
+                
+                if(isMenuOpen) {
+                    menu.style.display = 'flex';
+                    document.exitPointerLock();
+                    // --- Update Avatar Preview ---
+                    if(previewAvatar) previewScene.remove(previewAvatar);
+                    // Clone the player group (visuals only)
+                    previewAvatar = localAvatar.group.clone();
+                    // Reset position for preview
+                    previewAvatar.position.set(0, 0, 0);
+                    previewAvatar.rotation.set(0, 0, 0);
+                    // Fix nametag scale if needed (optional)
+                    previewScene.add(previewAvatar);
+                } else {
+                    menu.style.display = 'none';
+                }
+            },
+            
+            saveGame: function() {
+                 // Collect all world parts
+                 const saveObj = Object.values(worldObjects).map(obj => {
+                    return {
+                        type: obj.userData.type,
+                        px: obj.position.x, py: obj.position.y, pz: obj.position.z,
+                        rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
+                        sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
+                        color: obj.material.color.getHex(),
+                        anchored: obj.userData.anchored,
+                        canCollide: obj.userData.canCollide
+                    };
+                 });
+                 
+                 const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(saveObj));
+                 const dlAnchorElem = document.createElement('a');
+                 dlAnchorElem.setAttribute("href", dataStr);
+                 dlAnchorElem.setAttribute("download", "blox_world_save.json");
+                 dlAnchorElem.click();
+            },
+            
+            loadGame: function(input) {
+                const file = input.files[0];
+                if(!file) return;
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const parts = JSON.parse(e.target.result);
+                        if(Array.isArray(parts)) {
+                            log(`Loading ${parts.length} parts...`);
+                            parts.forEach((p, i) => {
+                                setTimeout(() => {
+                                    // Use existing create logic to handle sync
+                                    window.gameEditor.addWorldPart(p.type, p);
+                                }, i * 50); // Slight stagger to prevent network congestion
+                            });
+                            window.gameEditor.toggleMenu(); // Close menu
+                        }
+                    } catch(err) {
+                        console.error(err);
+                        alert("Invalid Save File");
+                    }
+                };
+                reader.readAsText(file);
+                input.value = ''; // Reset input
+            },
+
             addPart: function(type, overrideData) { if (!isEditing) return; this.createObject(type, 'avatar', overrideData); },
             
             addWorldPart: function(type, overrideData) {
-                if (!isEditing) return;
+                // If called from Load Game (overrideData exists), we don't need editing check
+                if (!isEditing && !overrideData) return;
+
                 // Request create
-                const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5));
-                const data = {
-                    type: type,
-                    px: spawnPos.x, py: spawnPos.y, pz: spawnPos.z,
-                    rx: 0, ry: 0, rz: 0,
-                    sx: 1, sy: 1, sz: 1,
-                    color: Math.floor(Math.random() * 0xffffff),
-                    anchored: true, canCollide: true
-                };
+                let data;
+                if (overrideData) {
+                    // Use loaded data
+                    data = overrideData;
+                } else {
+                    // New placement
+                    const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5));
+                    data = {
+                        type: type,
+                        px: spawnPos.x, py: spawnPos.y, pz: spawnPos.z,
+                        rx: 0, ry: 0, rz: 0,
+                        sx: 1, sy: 1, sz: 1,
+                        color: Math.floor(Math.random() * 0xffffff),
+                        anchored: true, canCollide: true
+                    };
+                }
 
                 if (NetState.mode === 'p2p-host') {
                     // Host assumes authority
@@ -1120,13 +1270,22 @@
             if (event.key === " ") keys[" "] = true;
             if (event.key === 'Shift' && !event.repeat) toggleShiftLock();
 
+            if (key === 'escape') {
+                // Priority: Close Editor -> Toggle Menu
+                if (isEditing) {
+                    window.gameEditor.toggle(); // Close tools
+                } else {
+                    window.gameEditor.toggleMenu(); // Toggle Menu
+                }
+            }
+
             if (isEditing) {
                 const k = event.key.toLowerCase();
                 if(k === '1') window.gameEditor.setMode('translate');
                 if(k === '2') window.gameEditor.setMode('rotate');
                 if(k === '3') window.gameEditor.setMode('scale');
                 if(k === 'delete') window.gameEditor.deleteSelected();
-                if(k === 'escape') window.gameEditor.toggle();
+                // Escape handled above
             }
         });
         window.addEventListener('keyup', (e) => {
@@ -1141,7 +1300,7 @@
         const crosshairEl = document.getElementById('crosshair');
 
         function toggleShiftLock() {
-            if (isEditing) return; 
+            if (isEditing || isMenuOpen) return; 
             isShiftLock = !isShiftLock;
             if (isShiftLock) {
                 document.body.requestPointerLock();
@@ -1241,6 +1400,7 @@
                 updateCameraPosition();
                 return; 
             }
+            if (isMenuOpen) return; // Stop movement if menu is open
 
             const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
             const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0,1,0));
@@ -1337,9 +1497,21 @@
         function animate() {
             requestAnimationFrame(animate);
             const delta = Math.min(clock.getDelta(), 0.1);
-            if (isGameActive) updatePlayer(delta);
+            
+            if (isGameActive && !isMenuOpen) updatePlayer(delta);
+            
+            // Render Main Scene
+            if(!isMenuOpen || isGameActive) { // Keep rendering main scene even if menu open for background effect
+                renderer.render(scene, camera);
+            }
+            
             if(selectedObject && selectionHelper.visible) selectionHelper.update();
-            renderer.render(scene, camera);
+
+            // Render Avatar Preview (Only when menu is open)
+            if(isMenuOpen && previewAvatar) {
+                previewAvatar.rotation.y += 1 * delta; // Slow spin
+                previewRenderer.render(previewScene, previewCamera);
+            }
         }
         animate();
     </script>
