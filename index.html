@@ -205,7 +205,7 @@
         import * as THREE from 'three';
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
         import { initializeApp } from 'firebase/app';
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
         import { getFirestore, collection, doc, setDoc, addDoc, onSnapshot, deleteDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 
         // --- Debug Logger ---
@@ -216,7 +216,7 @@
             console.log(msg);
         }
 
-        // --- FIREBASE CONFIGURATION (USER PROVIDED) ---
+        // --- FIREBASE CONFIGURATION ---
         const firebaseConfig = {
           apiKey: "AIzaSyCzUQXDXgsNt1QZqqeoNDQ4PBfQNjnS_Ag",
           authDomain: "robloxclone-d2bd3.firebaseapp.com",
@@ -300,7 +300,28 @@
         const remotePlayersGroup = new THREE.Group();
         scene.add(remotePlayersGroup);
 
-        // --- Avatar Building Functions ---
+        // --- Camera Variables (Global for hoisting) ---
+        const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, minDistance: 2, maxDistance: 80, sensitivity: 0.002, offsetY: 4.5 };
+
+        // --- Helper Functions (Hoisted) ---
+        function updateCameraPosition() {
+            cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, cameraParams.targetDistance, 0.2);
+            const r = cameraParams.distance, phi = cameraParams.phi, theta = cameraParams.theta;
+            const x = r * Math.sin(phi) * Math.sin(theta);
+            const y = r * Math.cos(phi);
+            const z = r * Math.sin(phi) * Math.cos(theta);
+            
+            const targetPos = playerGroup.position.clone();
+            targetPos.y += cameraParams.offsetY; 
+            camera.position.set(targetPos.x + x, targetPos.y + y, targetPos.z + z);
+            camera.lookAt(targetPos);
+
+            // Simple LOD/Hide check for first person
+            let isFirstPerson = false;
+            if (cameraParams.distance < 2.5) { isFirstPerson = true; playerGroup.visible = false; } 
+            else { isFirstPerson = false; playerGroup.visible = true; }
+        }
+
         function createFaceTexture() {
             const canvas = document.createElement('canvas');
             canvas.width = 512; canvas.height = 256;
@@ -320,29 +341,19 @@
         function createNameTag(name) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = 512; canvas.height = 128; // Larger resolution for sharper text
-            
-            // Text Shadow/Outline for readability
-            ctx.font = 'Bold 60px Arial';
+            canvas.width = 256; canvas.height = 64;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(0,0,256,64); // Background rect
+            ctx.font = 'Bold 40px Arial';
             ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            
-            // Background pill (optional, can make transparent)
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-            const textWidth = ctx.measureText(name).width;
-            const bgWidth = textWidth + 40;
-            ctx.roundRect(256 - bgWidth/2, 64 - 40, bgWidth, 80, 20);
-            ctx.fill();
-
             ctx.fillStyle = 'white';
-            ctx.fillText(name, 256, 64);
-            
+            ctx.fillText(name, 128, 48);
             const tex = new THREE.CanvasTexture(canvas);
             const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
             const sprite = new THREE.Sprite(spriteMat);
-            sprite.scale.set(6, 1.5, 1); // Wider scale for longer names
-            sprite.position.y = 5.5; // FIXED: Moved up above head (Head top is approx 5.2)
-            sprite.name = "nametag"; // Naming it allows us to find and replace it later
+            sprite.scale.set(4, 1, 1);
+            sprite.position.y = 5.5; // Above head
+            sprite.name = "nametag";
             return sprite;
         }
 
@@ -350,7 +361,6 @@
             const group = new THREE.Group();
             const parts = {};
             
-            // ... (Geometry definitions remain the same) ...
             const torsoGeo = new THREE.BoxGeometry(2, 2, 1);
             const limbGeo = new THREE.BoxGeometry(1, 2, 1);
             const headGeo = new THREE.CylinderGeometry(0.6, 0.6, 1.2, 32);
@@ -443,8 +453,9 @@
             if (now - lastSyncTime < 100) return; 
             
             lastSyncTime = now;
-            // Using Simplified 'players' collection
             const playerRef = doc(db, 'players', localPlayerId); 
+            
+            // Catch errors here so we don't crash main loop if permissions fail
             setDoc(playerRef, {
                 x: playerGroup.position.x,
                 y: playerGroup.position.y,
@@ -452,32 +463,10 @@
                 rot: playerGroup.rotation.y,
                 name: localPlayerName,
                 lastSeen: serverTimestamp()
-            }, { merge: true });
-        }
-
-        // --- HANDLE DISCONNECT ---
-        window.addEventListener('beforeunload', () => {
-            if (localPlayerId && !isOffline) {
-                // Attempt to delete player doc on exit (Best effort)
-                // Note: This relies on the browser sending the request before closing
-                deleteDoc(doc(db, 'players', localPlayerId));
-            }
-        });
-
-        // --- STALE PLAYER CLEANUP ---
-        // If a player crashes, they won't delete their doc. 
-        // This loop removes players locally if they haven't moved in 10 seconds.
-        setInterval(() => {
-            const now = Date.now();
-            Object.keys(remotePlayers).forEach(uid => {
-                const p = remotePlayers[uid];
-                if (now - p.lastUpdate > 10000) { // 10 seconds timeout
-                    console.log("Removing stale player:", uid);
-                    remotePlayersGroup.remove(p.group);
-                    delete remotePlayers[uid];
-                }
+            }, { merge: true }).catch(err => {
+                 // Silent fail for sync
             });
-        }, 2000);
+        }
 
         function startPlayerSync() {
             if (isOffline) return;
@@ -494,13 +483,10 @@
                     
                     let p = remotePlayers[uid];
                     
-                    // 1. Spawn if not exists
                     if (!p) {
                         log("Found new player: " + (data.name || "Guest"));
                         const remote = createAvatar(false);
-                        // Initial tag creation
                         remote.group.add(createNameTag(data.name || "Guest"));
-                        
                         remotePlayersGroup.add(remote.group);
                         remotePlayers[uid] = { 
                             group: remote.group, 
@@ -513,18 +499,15 @@
                         p = remotePlayers[uid];
                     }
                     
-                    // 2. Update Name Tag if name changed in DB (Fixes "Guest" issue)
                     const newName = data.name || "Guest";
                     if (p.currentName !== newName) {
                         log(`Player ${uid} changed name to ${newName}`);
                         const oldTag = p.group.getObjectByName("nametag");
                         if (oldTag) p.group.remove(oldTag);
-                        
                         p.group.add(createNameTag(newName));
                         p.currentName = newName;
                     }
                     
-                    // 3. Update Position Targets
                     if (data.x !== undefined) {
                         p.targetPos.set(data.x, data.y, data.z);
                         p.targetRot = data.rot;
@@ -532,7 +515,6 @@
                     }
                 });
                 
-                // Cleanup
                 Object.keys(remotePlayers).forEach(uid => {
                     if (!currentIds.includes(uid)) {
                         log("Player left: " + uid);
@@ -611,29 +593,10 @@
 
         // --- Game Logic ---
         const keys = { w: false, a: false, s: false, d: false, " ": false };
-        let isShiftLock = false, isRightClickRotating = false, isFirstPerson = false;
+        let isShiftLock = false, isRightClickRotating = false;
         let velocityY = 0, isGrounded = true;
         const playerDirection = new THREE.Vector3();
         const clock = new THREE.Clock();
-        
-        // Controls & Camera - DEFINE FUNCTION BEFORE USE
-        const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, minDistance: 2, maxDistance: 80, sensitivity: 0.002, offsetY: 4.5 };
-        
-        function updateCameraPosition() {
-            cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, cameraParams.targetDistance, 0.2);
-            const r = cameraParams.distance, phi = cameraParams.phi, theta = cameraParams.theta;
-            const x = r * Math.sin(phi) * Math.sin(theta);
-            const y = r * Math.cos(phi);
-            const z = r * Math.sin(phi) * Math.cos(theta);
-            
-            const targetPos = playerGroup.position.clone();
-            targetPos.y += cameraParams.offsetY; 
-            camera.position.set(targetPos.x + x, targetPos.y + y, targetPos.z + z);
-            camera.lookAt(targetPos);
-
-            if (cameraParams.distance < 2.5 && !isFirstPerson) { isFirstPerson = true; playerGroup.visible = false; } 
-            else if (cameraParams.distance >= 2.5 && isFirstPerson) { isFirstPerson = false; playerGroup.visible = true; }
-        }
 
         const transformControl = new TransformControls(camera, renderer.domElement);
         transformControl.setSpace('local');
@@ -680,19 +643,17 @@
                 if (isOffline) return this.createObject(type, 'world', overrideData); // Fallback for local
 
                 const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5)); 
-                addDoc(collection(db, 'worldObjects'), { // Simplified Path
+                addDoc(collection(db, 'worldObjects'), {
                     type: type,
                     px: spawnPos.x, py: spawnPos.y, pz: spawnPos.z,
                     rx: 0, ry: 0, rz: 0,
                     sx: 1, sy: 1, sz: 1,
                     color: Math.random() * 0xffffff,
                     anchored: true, canCollide: true, owner: localPlayerId
-                });
+                }).catch(e => console.error("Add part failed", e));
             },
             
             createObject: function(type, mode, data) {
-                // In multiplayer mode, world objects are created via Firestore listener. 
-                // This function is used for local Avatar parts OR offline world parts.
                 if (mode === 'world' && !isOffline && !data) return; 
 
                 let geometry;
@@ -703,7 +664,6 @@
                 const mesh = new THREE.Mesh(geometry, mat);
                 mesh.castShadow = true;
                 
-                // Setup metadata
                 mesh.userData = { 
                     isCustom: true, 
                     mode: mode, 
@@ -744,7 +704,7 @@
             },
             captureTransformEnd: function(obj) {
                 if (obj.userData.mode === 'world' && obj.userData.dbId && !isOffline) {
-                    const ref = doc(db, 'worldObjects', obj.userData.dbId); // Simplified Path
+                    const ref = doc(db, 'worldObjects', obj.userData.dbId);
                     updateDoc(ref, {
                         px: obj.position.x, py: obj.position.y, pz: obj.position.z,
                         rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
@@ -756,18 +716,18 @@
             setAnchored: function(val) {
                 if(selectedObject) {
                     selectedObject.userData.anchored = val;
-                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { anchored: val }); // Simplified Path
+                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { anchored: val });
                 }
             },
             setCanCollide: function(val) {
                 if(selectedObject) {
                     selectedObject.userData.canCollide = val;
-                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { canCollide: val }); // Simplified Path
+                    if(selectedObject.userData.dbId && !isOffline) updateDoc(doc(db, 'worldObjects', selectedObject.userData.dbId), { canCollide: val });
                 }
             },
             deleteSelected: function() {
                 if(selectedObject) {
-                    if (selectedObject.userData.dbId && !isOffline) deleteDoc(doc(db, 'worldObjects', selectedObject.userData.dbId)); // Simplified Path
+                    if (selectedObject.userData.dbId && !isOffline) deleteDoc(doc(db, 'worldObjects', selectedObject.userData.dbId));
                     else selectedObject.parent.remove(selectedObject);
                     this.clearSelection();
                 }
@@ -809,13 +769,13 @@
         document.addEventListener('pointerup', (event) => {
             if (event.button === 2) { isRightClickRotating = false; if (!isShiftLock) document.exitPointerLock(); }
         });
-
+        
         window.addEventListener('keydown', (event) => {
             const key = event.key.toLowerCase();
             if (keys.hasOwnProperty(key)) keys[key] = true;
             if (event.key === " ") keys[" "] = true;
-            if (event.key === 'Shift') toggleShiftLock();
-            
+            if (event.key === 'Shift' && !event.repeat) toggleShiftLock();
+
             if (isEditing) {
                 const k = event.key.toLowerCase();
                 if(k === '1') window.gameEditor.setMode('translate');
@@ -829,6 +789,40 @@
             const key = e.key.toLowerCase();
             if (keys.hasOwnProperty(key)) keys[key] = false;
             if (e.key === " ") keys[" "] = false;
+        });
+
+        // --- Game State ---
+        const shiftStatusEl = document.getElementById('shift-status');
+        const crosshairEl = document.getElementById('crosshair');
+
+        function toggleShiftLock() {
+            if (isEditing) return; 
+            isShiftLock = !isShiftLock;
+            if (isShiftLock) {
+                document.body.requestPointerLock();
+                shiftStatusEl.textContent = "ON"; shiftStatusEl.className = "status-badge on";
+                crosshairEl.style.display = "block";
+            } else {
+                if(!isRightClickRotating) document.exitPointerLock();
+                shiftStatusEl.textContent = "OFF"; shiftStatusEl.className = "status-badge off";
+                crosshairEl.style.display = "none";
+            }
+        }
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement !== document.body) {
+                if (isShiftLock) toggleShiftLock();
+                isRightClickRotating = false;
+            }
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            const isLocked = document.pointerLockElement === document.body;
+            if (isLocked) {
+                cameraParams.theta -= e.movementX * cameraParams.sensitivity;
+                cameraParams.phi -= e.movementY * cameraParams.sensitivity;
+                cameraParams.phi = Math.max(0.01, Math.min(Math.PI / 2 - 0.1, cameraParams.phi));
+            }
         });
 
         // --- Physics & Movement ---
@@ -926,7 +920,7 @@
                 playerGroup.position.z += resZ.z;
                 
                 if (isShiftLock) {
-                    playerGroup.rotation.y = cameraParams.theta + Math.PI;
+                    playerGroup.rotation.y = cameraParams.theta;
                 } else {
                     const targetRot = Math.atan2(playerDirection.x, playerDirection.z);
                     let rotDiff = (targetRot + Math.PI) - playerGroup.rotation.y; 
@@ -935,7 +929,7 @@
                     playerGroup.rotation.y += rotDiff * ROTATION_SPEED * delta;
                 }
             } else if (isShiftLock) {
-                playerGroup.rotation.y = cameraParams.theta + Math.PI;
+                playerGroup.rotation.y = cameraParams.theta;
             }
             
             updatePhysics(delta);
@@ -987,15 +981,25 @@
             });
         }
 
-        document.addEventListener('mousemove', (e) => {
-            const isLocked = document.pointerLockElement === document.body;
-            if (isLocked) {
-                cameraParams.theta -= e.movementX * cameraParams.sensitivity;
-                cameraParams.phi -= e.movementY * cameraParams.sensitivity;
-                cameraParams.phi = Math.max(0.01, Math.min(Math.PI / 2 - 0.1, cameraParams.phi));
+        // --- DISCONNECT HANDLER ---
+        window.addEventListener('beforeunload', () => {
+            if (localPlayerId && !isOffline) {
+                deleteDoc(doc(db, 'players', localPlayerId));
             }
         });
-        
+
+        // --- STALE PLAYER CLEANUP ---
+        setInterval(() => {
+            const now = Date.now();
+            Object.keys(remotePlayers).forEach(uid => {
+                const p = remotePlayers[uid];
+                if (now - p.lastUpdate > 10000) { 
+                    remotePlayersGroup.remove(p.group);
+                    delete remotePlayers[uid];
+                }
+            });
+        }, 2000);
+
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
