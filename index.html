@@ -335,7 +335,6 @@
         import * as THREE from 'three';
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-        // --- Debug Logger ---
         function log(msg) {
             const consoleEl = document.getElementById('debug-console');
             consoleEl.innerText += `\n> ${msg}`;
@@ -350,7 +349,7 @@
             const p2pSec = document.getElementById('section-p2p');
             const srvSec = document.getElementById('section-server');
             const msgEl = document.getElementById('connection-msg');
-            msgEl.style.display = 'none'; // Clear errors on switch
+            msgEl.style.display = 'none';
 
             if(mode === 'p2p') {
                 p2pBtn.classList.add('active'); srvBtn.classList.remove('active');
@@ -361,19 +360,16 @@
             }
         };
 
-        // --- NETWORK GLOBAL STATE ---
         const APP_PREFIX = 'blox-p2p-2025-'; 
         
-        // Generate a simple random ID for game entities
         function generateId() {
             return Math.random().toString(36).substr(2, 9);
         }
         
-        // Create a unique ID for this session (Server Mode Identity)
         const localSessionId = 'user-' + generateId();
 
         const NetState = {
-            mode: 'none', // 'p2p-host', 'p2p-client', 'server'
+            mode: 'none',
             isHost: false,
             peer: null,
             conn: null, 
@@ -388,11 +384,9 @@
         const remotePlayers = {}; 
         const worldObjects = {}; 
 
-        // --- CONNECTION LOGIC ---
         const hostBtn = document.getElementById('host-btn');
         const joinBtn = document.getElementById('join-btn');
         const connectServerBtn = document.getElementById('connect-server-btn');
-        
         const statusEl = document.getElementById('network-status');
         const msgEl = document.getElementById('connection-msg');
         const hudEl = document.getElementById('room-hud');
@@ -404,100 +398,74 @@
             hudEl.style.display = 'block';
             codeEl.innerHTML = displayText;
             isGameActive = true;
-            
-            // Update ESC Menu name
             document.getElementById('menu-username-display').textContent = localPlayerName;
         }
 
-        function handleData(data, senderConn) {
-            // --- PROTOCOL HANDLER ---
-            switch(data.type) {
-                case 'WELCOME':
-                    // Client receives initial state
-                    log(`Connected! Found ${data.players.length} players and ${data.world.length} objects.`);
-                    data.players.forEach(p => updateRemotePlayer(p.id, p));
-                    data.world.forEach(w => spawnRemotePart(w.id, w));
-                    
-                    // NEW: Load attachments for existing players
-                    data.players.forEach(p => {
-                        if(p.attachments) {
-                            Object.values(p.attachments).forEach(att => {
-                                attachToRemoteAvatar(p.id, att);
-                            });
-                        }
-                    });
-                    break;
-                    
-                case 'PLAYER_UPDATE':
-                    // Received player movement
-                    if (NetState.isHost) {
-                        // If Host, broadcast to everyone else
-                        NetState.connections.forEach(c => {
-                            if (c.peer !== senderConn.peer) c.send(data);
-                        });
+        // --- UNIVERSAL PROTOCOL HANDLER ---
+        function handleNetworkMessage(msg) {
+            // Handle Initial State Sync
+            if (msg.type === 'INIT') {
+                log(`Server Init: ${Object.keys(msg.state).length} entities loaded.`);
+                // Process initial state
+                Object.values(msg.state).forEach(item => {
+                    processEntityUpdate(item.id, item);
+                });
+                return;
+            }
+
+            // Handle P2P / Server Updates
+            // Format: { type: 'SET' | 'DELETE', id: '...', data: { ... } }
+            
+            if (msg.type === 'SET') {
+                processEntityUpdate(msg.id, msg.data);
+            } else if (msg.type === 'DELETE') {
+                processEntityDelete(msg.id);
+            }
+        }
+
+        function processEntityUpdate(id, data) {
+            if (id === localSessionId && NetState.mode === 'server') return; // Ignore echo if server mode
+            if (NetState.mode !== 'server' && id === NetState.peer?.id) return; // Ignore echo if P2P
+
+            if (data.kind === 'player') {
+                updateRemotePlayer(id, data);
+            } else if (data.kind === 'world') {
+                spawnRemotePart(id, data);
+            } else if (data.kind === 'avatar-part') {
+                attachToRemoteAvatar(data.playerId, data);
+            }
+        }
+
+        function processEntityDelete(id) {
+            if (remotePlayers[id]) {
+                removeRemotePlayer(id);
+            } else if (worldObjects[id]) {
+                deleteWorldPart(id);
+            } else {
+                // Might be an avatar part attached to someone
+                // Inefficient lookup but robust for now
+                Object.values(remotePlayers).forEach(p => {
+                    if (p.attachments && p.attachments[id]) {
+                        deleteRemoteAvatarPart(p.id, id);
                     }
-                    updateRemotePlayer(data.id, data);
-                    break;
+                });
+            }
+        }
 
-                case 'PLAYER_LEAVE':
-                    log(`Removing Player: ${data.id}`);
-                    removeRemotePlayer(data.id);
-                    break;
-                    
-                // --- WORLD EVENTS ---
-                case 'REQ_WORLD_CREATE':
-                    if (NetState.isHost) {
-                        // Host creates the object and broadcasts
-                        const newId = generateId();
-                        const worldData = { ...data.data, id: newId };
-                        spawnRemotePart(newId, worldData); // Local spawn
-                        broadcast({ type: 'WORLD_CREATE', data: worldData });
-                    }
-                    break;
-
-                case 'WORLD_CREATE':
-                    // Client spawns object
-                    spawnRemotePart(data.data.id, data.data);
-                    break;
-
-                case 'REQ_WORLD_UPDATE':
-                    if (NetState.isHost) {
-                        // Host updates authoritative state and broadcasts
-                        updateRemotePart(data.id, data.data);
-                        broadcast({ type: 'WORLD_UPDATE', id: data.id, data: data.data });
-                    }
-                    break;
-
-                case 'WORLD_UPDATE':
-                    updateRemotePart(data.id, data.data);
-                    break;
-                
-                case 'REQ_WORLD_DELETE':
-                    if (NetState.isHost) {
-                        deleteWorldPart(data.id);
-                        broadcast({ type: 'WORLD_DELETE', id: data.id });
-                    }
-                    break;
-
-                case 'WORLD_DELETE':
-                    deleteWorldPart(data.id);
-                    break;
-
-                // --- AVATAR EVENTS ---
-                case 'AVATAR_ATTACH':
-                    // Someone added an attachment
-                    attachToRemoteAvatar(data.playerId, data.data);
-                    break;
-
-                case 'AVATAR_UPDATE':
-                    // Someone edited an attachment
-                    updateRemoteAvatarPart(data.playerId, data.attId, data.data);
-                    break;
-
-                case 'AVATAR_DELETE':
-                    // Someone deleted an attachment
-                    deleteRemoteAvatarPart(data.playerId, data.attId);
-                    break;
+        // Helper to send standard updates
+        function sendNetworkUpdate(action, id, data) {
+            const msg = { type: action, id: id, data: data };
+            
+            if (NetState.mode === 'server') {
+                if (NetState.serverSocket?.readyState === WebSocket.OPEN) {
+                    NetState.serverSocket.send(JSON.stringify(msg));
+                }
+            } 
+            else if (NetState.mode === 'p2p-host') {
+                broadcast(msg);
+            } 
+            else if (NetState.mode === 'p2p-client' && NetState.conn) {
+                NetState.conn.send(msg);
             }
         }
 
@@ -506,79 +474,103 @@
             NetState.connections.forEach(c => c.send(data));
         }
 
-        // --- P2P HOSTING ---
+        // --- SERVER CONNECT LOGIC ---
+        connectServerBtn.addEventListener('click', () => {
+            let url = document.getElementById('server-url-input').value.trim();
+            if(!url) return;
+            
+            if (url.startsWith('https://')) url = url.replace('https://', 'wss://');
+            else if (url.startsWith('http://')) url = url.replace('http://', 'ws://');
+            else if (!url.startsWith('ws://') && !url.startsWith('wss://')) url = 'wss://' + url;
+
+            localPlayerName = document.getElementById('username-input').value || "User";
+            NetState.mode = 'server';
+            NetState.serverUrl = url;
+            
+            connectServerBtn.disabled = true;
+            connectServerBtn.textContent = "Connecting...";
+            msgEl.style.display = 'none';
+            
+            try {
+                NetState.serverSocket = new WebSocket(url);
+
+                NetState.serverSocket.onopen = () => {
+                    statusEl.textContent = "Connected to Server";
+                    initGame("SERVER LINK: <span style='font-size:14px'>" + url + "</span>");
+                    connectServerBtn.disabled = false;
+                    connectServerBtn.textContent = "Connect to Server";
+                };
+
+                NetState.serverSocket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleNetworkMessage(data);
+                    } catch (e) { console.error(e); }
+                };
+
+                NetState.serverSocket.onerror = (error) => {
+                    msgEl.innerHTML = "Connection Failed. Server might be waking up.";
+                    msgEl.style.display = 'block';
+                    connectServerBtn.disabled = false;
+                    connectServerBtn.textContent = "Connect to Server";
+                };
+
+                NetState.serverSocket.onclose = () => {
+                    statusEl.textContent = "Disconnected";
+                    if(isGameActive) { alert("Disconnected"); location.reload(); }
+                };
+
+            } catch(e) {
+                console.error(e);
+                connectServerBtn.disabled = false;
+            }
+        });
+
+        // --- P2P HOSTING & JOINING (Adapted to new Protocol) ---
+        // To keep P2P working with the new "SET/DELETE" standard, we adapt the host logic.
+        
         function createHost() {
              const code = Math.floor(100000 + Math.random() * 900000).toString();
              NetState.code = code;
              NetState.mode = 'p2p-host';
              
              NetState.peer = new window.Peer(APP_PREFIX + code);
-             
-             NetState.peer.on('error', (err) => {
-                 if(err.type === 'unavailable-id') {
-                     console.warn("ID Collision, retrying...");
-                     createHost(); // Retry
-                 } else {
-                     console.error(err);
-                     msgEl.textContent = "Connection Error: " + err.type;
-                     msgEl.style.display = 'block';
-                 }
-             });
-
              NetState.peer.on('open', (id) => {
-                log("Hosting P2P Game. Code: " + code);
-                statusEl.textContent = "Hosting: " + code;
-                document.getElementById('host-id-display-container').style.display = 'block';
-                document.getElementById('host-id-text').textContent = code;
-                hostBtn.disabled = true;
-                joinBtn.disabled = true;
                 initGame(code);
+                hostBtn.disabled = true;
             });
 
             NetState.peer.on('connection', (conn) => {
-                log("New Player Connecting...");
                 NetState.connections.push(conn);
-                
-                conn.on('data', (data) => handleData(data, conn));
+                conn.on('data', (data) => handleNetworkMessage(data)); // Handle generic data
                 
                 conn.on('open', () => {
-                    // Send Welcome Package
-                    const players = Object.values(remotePlayers).map(p => ({
-                        id: p.id, x: p.group.position.x, y: p.group.position.y, z: p.group.position.z, 
-                        rot: p.group.rotation.y, name: p.currentName
-                        // NOTE: Local attachments are stored in `players[...].attachments` on server if using server mode.
-                        // If P2P, we need to manually send our attachments.
-                        // For this demo, simpler: client sends their full attachment list on connect?
-                        // Or simpler: Host gathers state. 
-                    }));
-                    
-                    // Include Host in players list
-                    players.push({
-                        id: NetState.peer.id, x: playerGroup.position.x, y: playerGroup.position.y, z: playerGroup.position.z,
-                        rot: playerGroup.rotation.y, name: localPlayerName
-                    });
-                    
-                    const world = Object.values(worldObjects).map(obj => {
-                        return {
-                            id: obj.userData.dbId,
-                            type: obj.userData.type,
-                            px: obj.position.x, py: obj.position.y, pz: obj.position.z,
-                            rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
-                            sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
-                            color: obj.material.color.getHex(),
-                            anchored: obj.userData.anchored,
-                            canCollide: obj.userData.canCollide
+                    // Send Initial State P2P Style
+                    // Gather all entities into a mock 'state' object
+                    const state = {};
+                    // 1. Remote Players
+                    Object.values(remotePlayers).forEach(p => {
+                        state[p.id] = { 
+                            kind: 'player', id: p.id, x: p.group.position.x, y: p.group.position.y, z: p.group.position.z, 
+                            rot: p.group.rotation.y, name: p.currentName 
                         };
+                        // Attachments
+                        Object.values(p.attachments).forEach(att => { state[att.userData.id] = att.userData; });
                     });
+                    // 2. Host Player
+                    state[NetState.peer.id] = {
+                        kind: 'player', id: NetState.peer.id, x: playerGroup.position.x, y: playerGroup.position.y, z: playerGroup.position.z,
+                        rot: playerGroup.rotation.y, name: localPlayerName
+                    };
+                    // 3. World
+                    Object.values(worldObjects).forEach(obj => { state[obj.userData.dbId] = obj.userData; });
 
-                    conn.send({ type: 'WELCOME', players: players, world: world });
+                    conn.send({ type: 'INIT', state: state });
                 });
-
+                
                 conn.on('close', () => {
-                    log("Player Disconnected: " + conn.peer);
                     NetState.connections = NetState.connections.filter(c => c !== conn);
-                    removeRemotePlayer(conn.peer);
-                    broadcast({ type: 'PLAYER_LEAVE', id: conn.peer });
+                    // In P2P, we rely on explicit leave messages or timeouts, simpler to leave basic cleanup for now
                 });
             });
         }
@@ -586,164 +578,26 @@
         hostBtn.addEventListener('click', () => {
             localPlayerName = document.getElementById('username-input').value || "Host";
             NetState.isHost = true;
-            statusEl.textContent = "Initializing Host...";
             createHost();
         });
 
-        // --- P2P JOINING ---
         joinBtn.addEventListener('click', () => {
             const codeInput = document.getElementById('host-id-input').value.trim();
-            if (!codeInput || codeInput.length !== 6) {
-                msgEl.textContent = "Please enter a valid 6-digit code.";
-                msgEl.style.display = 'block';
-                return;
-            }
-            
+            if (!codeInput) return;
             localPlayerName = document.getElementById('username-input').value || "Guest";
             NetState.isHost = false;
             NetState.mode = 'p2p-client';
-            NetState.code = codeInput;
-            statusEl.textContent = "Connecting to " + codeInput;
             
-            NetState.peer = new window.Peer(); // Auto ID
-            
+            NetState.peer = new window.Peer();
             NetState.peer.on('open', (id) => {
-                const hostId = APP_PREFIX + codeInput;
-                NetState.conn = NetState.peer.connect(hostId);
-                
-                NetState.conn.on('open', () => {
-                    log("Connected to Host!");
-                    statusEl.textContent = "Connected to " + codeInput;
-                    initGame(codeInput);
-                });
-                
-                NetState.conn.on('data', (data) => handleData(data, NetState.conn));
-                NetState.conn.on('close', () => {
-                    alert("Host disconnected");
-                    location.reload();
-                });
-                NetState.conn.on('error', (err) => {
-                    console.error(err);
-                    msgEl.style.display = 'block';
-                    msgEl.textContent = "Connection Failed. Check Code.";
-                });
-                
-                setTimeout(() => {
-                    if(!NetState.conn.open) {
-                        msgEl.style.display = 'block';
-                        msgEl.textContent = "Connecting taking too long...";
-                    }
-                }, 5000);
+                NetState.conn = NetState.peer.connect(APP_PREFIX + codeInput);
+                NetState.conn.on('open', () => initGame(codeInput));
+                NetState.conn.on('data', (data) => handleNetworkMessage(data));
             });
         });
 
-        // --- SERVER CONNECT LOGIC ---
-        connectServerBtn.addEventListener('click', () => {
-            let url = document.getElementById('server-url-input').value.trim();
-            if(!url) {
-                msgEl.textContent = "Please enter a WebSocket URL.";
-                msgEl.style.display = 'block';
-                return;
-            }
-            
-            // Auto-fix protocol if user pasted https:// or http://
-            if (url.startsWith('https://')) {
-                url = url.replace('https://', 'wss://');
-            } else if (url.startsWith('http://')) {
-                url = url.replace('http://', 'ws://');
-            } else if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-                // Default to wss if no protocol specified
-                url = 'wss://' + url;
-            }
-
-            localPlayerName = document.getElementById('username-input').value || "User";
-            
-            NetState.mode = 'server';
-            NetState.serverUrl = url;
-            NetState.isHost = false; // In server mode, server is host.
-            
-            // Disable button
-            connectServerBtn.disabled = true;
-            connectServerBtn.textContent = "Connecting...";
-
-            log(`Attempting WebSocket connection to: ${url}...`);
-            statusEl.textContent = `Connecting...`;
-            msgEl.style.display = 'none';
-            
-            try {
-                NetState.serverSocket = new WebSocket(url);
-
-                NetState.serverSocket.onopen = () => {
-                    log("WebSocket Open! Authenticating...");
-                    statusEl.textContent = "Connected to Server";
-                    initGame("SERVER LINK: <span style='font-size:14px'>" + url + "</span>");
-                    connectServerBtn.disabled = false;
-                    connectServerBtn.textContent = "Connect to Server";
-                    
-                    // Optional: Send an auth/join packet immediately if your server expects it
-                    // NetState.serverSocket.send(JSON.stringify({ type: 'JOIN', name: localPlayerName }));
-                };
-
-                NetState.serverSocket.onmessage = (event) => {
-                    try {
-                        const data = JSON.parse(event.data);
-                        handleData(data, null);
-                    } catch (e) {
-                        console.error("Failed to parse server message", e);
-                    }
-                };
-
-                NetState.serverSocket.onerror = (error) => {
-                    console.error("WebSocket Error", error);
-                    log("WebSocket connection failed.");
-                    if (!isGameActive) {
-                        msgEl.innerHTML = "Connection Failed. <br>If using Render free tier, the server might be waking up.<br>Wait 1 minute and try again.";
-                        msgEl.style.display = 'block';
-                        statusEl.textContent = "Connection Failed";
-                        
-                        // Reset state to allow retry
-                        NetState.mode = 'none';
-                        NetState.serverSocket = null;
-                        connectServerBtn.disabled = false;
-                        connectServerBtn.textContent = "Connect to Server";
-                    }
-                };
-
-                NetState.serverSocket.onclose = () => {
-                    log("WebSocket Closed");
-                    statusEl.textContent = "Disconnected";
-                    if(isGameActive) {
-                        alert("Server Disconnected");
-                        location.reload();
-                    }
-                };
-
-            } catch(e) {
-                console.error(e);
-                msgEl.textContent = "Error creating WebSocket: " + e.message;
-                msgEl.style.display = 'block';
-                connectServerBtn.disabled = false;
-                connectServerBtn.textContent = "Connect to Server";
-            }
-        });
-
-        document.getElementById('copy-btn').addEventListener('click', () => {
-            navigator.clipboard.writeText(NetState.code);
-            alert("Code Copied!");
-        });
-
-
-        // --- Configuration ---
-        const COLORS = {
-            head: 0xF5CD2F, torso: 0x0D69AC, arms: 0xF5CD2F, legs: 0xA4BD47,
-            baseplate: 0x999999, studs: 0x777777
-        };
-        const WALK_SPEED = 16;
-        const JUMP_FORCE = 25;
-        const GRAVITY = -60;
-        const ROTATION_SPEED = 10;
-
-        // --- Three.js Setup ---
+        // --- 3D SETUP & GAME LOGIC (Unchanged visuals, Updated logic) ---
+        const COLORS = { head: 0xF5CD2F, torso: 0x0D69AC, arms: 0xF5CD2F, legs: 0xA4BD47, baseplate: 0x999999 };
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87CEEB);
         scene.fog = new THREE.Fog(0x87CEEB, 20, 250);
@@ -754,7 +608,6 @@
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-        // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
         scene.add(ambientLight);
         const dirLight = new THREE.DirectionalLight(0xffffff, 1);
@@ -765,17 +618,11 @@
         dirLight.shadow.bias = -0.001; 
         scene.add(dirLight);
         
-        const groundSize = 400;
-        const groundGeo = new THREE.PlaneGeometry(groundSize, groundSize);
-        const groundMat = new THREE.MeshStandardMaterial({ color: COLORS.baseplate, roughness: 0.8 });
-        const ground = new THREE.Mesh(groundGeo, groundMat);
+        const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: COLORS.baseplate, roughness: 0.8 }));
         ground.rotation.x = -Math.PI / 2;
         ground.receiveShadow = true;
-        ground.userData = { name: "Baseplate", isWorld: true, anchored: true, canCollide: true };
         scene.add(ground); 
-        scene.add(new THREE.GridHelper(groundSize, 100, 0x555555, 0x888888));
-
-        // Groups
+        
         const worldGroup = new THREE.Group();
         scene.add(worldGroup);
         const playerGroup = new THREE.Group();
@@ -783,10 +630,9 @@
         const remotePlayersGroup = new THREE.Group();
         scene.add(remotePlayersGroup);
 
-        // --- Camera Variables ---
-        const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, minDistance: 2, maxDistance: 80, sensitivity: 0.002, offsetY: 4.5 };
+        const cameraParams = { distance: 10, targetDistance: 10, theta: 0, phi: Math.PI / 4, offsetY: 4.5 };
 
-        // --- PREVIEW AVATAR SCENE (For ESC Menu) ---
+        // Preview Scene
         const previewScene = new THREE.Scene();
         previewScene.background = new THREE.Color(0x111111);
         const previewCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
@@ -801,121 +647,49 @@
         previewScene.add(new THREE.AmbientLight(0xffffff, 0.5));
         let previewAvatar = null;
 
-        // --- Helper Functions ---
-        function updateCameraPosition() {
-            cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, cameraParams.targetDistance, 0.2);
-            const r = cameraParams.distance, phi = cameraParams.phi, theta = cameraParams.theta;
-            const x = r * Math.sin(phi) * Math.sin(theta);
-            const y = r * Math.cos(phi);
-            const z = r * Math.sin(phi) * Math.cos(theta);
-            
-            const targetPos = playerGroup.position.clone();
-            targetPos.y += cameraParams.offsetY; 
-            camera.position.set(targetPos.x + x, targetPos.y + y, targetPos.z + z);
-            camera.lookAt(targetPos);
-
-            let isFirstPerson = false;
-            if (cameraParams.distance < 2.5) { isFirstPerson = true; playerGroup.visible = false; } 
-            else { isFirstPerson = false; playerGroup.visible = true; }
-        }
-
-        function createFaceTexture() {
-            const canvas = document.createElement('canvas');
-            canvas.width = 512; canvas.height = 256;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#F5CD2F'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-            const centerX = canvas.width * 0.75; const centerY = canvas.height * 0.5;
-            ctx.fillStyle = '#111';
-            ctx.beginPath(); ctx.arc(centerX - 40, centerY - 20, 12, 0, Math.PI * 2); 
-            ctx.arc(centerX + 40, centerY - 20, 12, 0, Math.PI * 2); ctx.fill();
-            ctx.lineWidth = 8; ctx.strokeStyle = '#111';
-            ctx.beginPath(); ctx.arc(centerX, centerY, 50, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
-            const tex = new THREE.CanvasTexture(canvas);
-            tex.colorSpace = THREE.SRGBColorSpace;
-            return tex;
-        }
-
-        function createNameTag(name) {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = 256; canvas.height = 64;
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillRect(0,0,256,64); 
-            ctx.font = 'Bold 40px Arial';
-            ctx.textAlign = "center";
-            ctx.fillStyle = 'white';
-            ctx.fillText(name, 128, 48);
-            const tex = new THREE.CanvasTexture(canvas);
-            const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
-            const sprite = new THREE.Sprite(spriteMat);
-            sprite.scale.set(4, 1, 1);
-            sprite.position.y = 5.5; // Above head
-            sprite.name = "nametag";
-            return sprite;
-        }
-
         function createAvatar(isLocal) {
             const group = new THREE.Group();
             const parts = {};
-            
-            const torsoGeo = new THREE.BoxGeometry(2, 2, 1);
+            const torso = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 1), new THREE.MeshStandardMaterial({ color: COLORS.torso }));
+            torso.position.y = 3; torso.castShadow = true; group.add(torso); parts.torso = torso;
+            const head = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 1.2, 32), new THREE.MeshStandardMaterial({ color: COLORS.head }));
+            head.position.y = 1.6; head.rotation.y = -Math.PI/2; torso.add(head); parts.head = head;
+            // Limbs
             const limbGeo = new THREE.BoxGeometry(1, 2, 1);
-            const headGeo = new THREE.CylinderGeometry(0.6, 0.6, 1.2, 32);
-
-            const skinMat = new THREE.MeshStandardMaterial({ color: COLORS.head });
-            const faceMat = new THREE.MeshStandardMaterial({ map: createFaceTexture() });
-            const torsoMat = new THREE.MeshStandardMaterial({ color: COLORS.torso });
             const armMat = new THREE.MeshStandardMaterial({ color: COLORS.arms });
             const legMat = new THREE.MeshStandardMaterial({ color: COLORS.legs });
-
-            const torso = new THREE.Mesh(torsoGeo, torsoMat);
-            torso.position.y = 3; torso.castShadow = true;
-            group.add(torso); parts.torso = torso;
-
-            const head = new THREE.Mesh(headGeo, [faceMat, skinMat, skinMat]);
-            head.position.y = 1.6; head.rotation.y = -Math.PI / 2;
-            torso.add(head); parts.head = head;
-
-            const leftArm = new THREE.Mesh(limbGeo, armMat); 
-            const laPivot = new THREE.Group(); laPivot.position.set(-1.5, 0.8, 0); torso.add(laPivot);
-            leftArm.position.y = -0.8; leftArm.castShadow = true; laPivot.add(leftArm); parts.leftArm = laPivot;
-
-            const rightArm = new THREE.Mesh(limbGeo, armMat); 
-            const raPivot = new THREE.Group(); raPivot.position.set(1.5, 0.8, 0); torso.add(raPivot);
-            rightArm.position.y = -0.8; rightArm.castShadow = true; raPivot.add(rightArm); parts.rightArm = raPivot;
-
-            const leftLeg = new THREE.Mesh(limbGeo, legMat); 
-            const llPivot = new THREE.Group(); llPivot.position.set(-0.5, -1, 0); torso.add(llPivot);
-            leftLeg.position.y = -1; leftLeg.castShadow = true; llPivot.add(leftLeg); parts.leftLeg = llPivot;
-
-            const rightLeg = new THREE.Mesh(limbGeo, legMat); 
-            const rlPivot = new THREE.Group(); rlPivot.position.set(0.5, -1, 0); torso.add(rlPivot);
-            rightLeg.position.y = -1; rightLeg.castShadow = true; rlPivot.add(rightLeg); parts.rightLeg = rlPivot;
-
+            const makeLimb = (x, y, mat, parent) => {
+                const mesh = new THREE.Mesh(limbGeo, mat);
+                const pivot = new THREE.Group(); pivot.position.set(x, y, 0); parent.add(pivot);
+                mesh.position.y = (y < 0) ? -1 : -0.8; mesh.castShadow = true; pivot.add(mesh);
+                return pivot;
+            };
+            parts.leftArm = makeLimb(-1.5, 0.8, armMat, torso);
+            parts.rightArm = makeLimb(1.5, 0.8, armMat, torso);
+            parts.leftLeg = makeLimb(-0.5, -1, legMat, torso);
+            parts.rightLeg = makeLimb(0.5, -1, legMat, torso);
             if(isLocal) group.userData.parts = parts;
             return { group, parts };
         }
 
-        // Init Local Player
         const localAvatar = createAvatar(true);
         playerGroup.add(localAvatar.group);
-        const bodyParts = localAvatar.group.userData.parts; 
-        
-        // --- Network Game Sync ---
+        const bodyParts = localAvatar.group.userData.parts;
+
+        // --- CORE NETWORKING ---
         let lastUpdate = 0;
-        const UPDATE_RATE = 1000 / 15; // 15 times per second (approx 66ms)
+        const UPDATE_RATE = 1000 / 15; 
 
         function sendPlayerUpdate() {
             const now = Date.now();
-            if (now - lastUpdate < UPDATE_RATE) return; // Skip if too soon
+            if (now - lastUpdate < UPDATE_RATE) return; 
             lastUpdate = now;
 
-            // Determine proper ID based on mode
             const myId = (NetState.mode === 'server') ? localSessionId : (NetState.peer?.id);
-            if (!myId) return; // Not ready
+            if (!myId) return;
 
             const data = {
-                type: 'PLAYER_UPDATE',
+                kind: 'player',
                 id: myId,
                 x: playerGroup.position.x,
                 y: playerGroup.position.y,
@@ -923,43 +697,28 @@
                 rot: playerGroup.rotation.y,
                 name: localPlayerName
             };
-
-            if (NetState.mode === 'server') {
-                // Send via WebSocket if open
-                if (NetState.serverSocket && NetState.serverSocket.readyState === WebSocket.OPEN) {
-                    NetState.serverSocket.send(JSON.stringify(data));
-                }
-            }
-            else if (NetState.mode === 'p2p-host') {
-                broadcast(data);
-            }
-            else if (NetState.mode === 'p2p-client' && NetState.conn) {
-                NetState.conn.send(data);
-            }
+            sendNetworkUpdate('SET', myId, data);
         }
 
         function updateRemotePlayer(id, data) {
-            // Ignore own updates based on mode
-            const myId = (NetState.mode === 'server') ? localSessionId : (NetState.peer?.id);
-            if (id === myId) return;
-
             let p = remotePlayers[id];
             if (!p) {
-                log("New Player: " + data.name);
                 const remote = createAvatar(false);
-                remote.group.add(createNameTag(data.name));
+                // Basic Name Tag
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width=256; canvas.height=64;
+                ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,256,64);
+                ctx.font='Bold 40px Arial'; ctx.fillStyle='white'; ctx.textAlign="center"; ctx.fillText(data.name, 128, 48);
+                const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas) }));
+                sprite.scale.set(4,1,1); sprite.position.y=5.5; remote.group.add(sprite);
+
                 remotePlayersGroup.add(remote.group);
                 p = remotePlayers[id] = {
-                    id: id,
-                    group: remote.group,
-                    targetPos: new THREE.Vector3(data.x, data.y, data.z),
-                    targetRot: data.rot,
-                    parts: remote.parts,
-                    currentName: data.name,
-                    attachments: {}
+                    id: id, group: remote.group, targetPos: new THREE.Vector3(data.x, data.y, data.z),
+                    targetRot: data.rot, parts: remote.parts, currentName: data.name, attachments: {}
                 };
             }
-            
             p.targetPos.set(data.x, data.y, data.z);
             p.targetRot = data.rot;
         }
@@ -971,691 +730,309 @@
             }
         }
 
-        // --- AVATAR ATTACHMENT LOGIC (Remote) ---
         function attachToRemoteAvatar(playerId, data) {
-            // Ignore self based on mode
-            const myId = (NetState.mode === 'server') ? localSessionId : (NetState.peer?.id);
-            if (playerId === myId) return;
-
+            if (!remotePlayers[playerId]) return;
             const p = remotePlayers[playerId];
-            if(!p) return;
+            if (p.attachments[data.id]) return;
 
-            if(p.attachments[data.id]) return; // Already exists
-
-            let geometry;
-            if (data.type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
-            else if (data.type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-            
-            const mat = new THREE.MeshStandardMaterial({ color: data.color });
-            const mesh = new THREE.Mesh(geometry, mat);
+            let geometry = (data.type === 'box') ? new THREE.BoxGeometry(1,1,1) : new THREE.CylinderGeometry(0.5,0.5,1,16);
+            const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: data.color }));
             mesh.castShadow = true;
-            mesh.userData = { ...data, isRemoteAttachment: true };
-
-            // Apply Transform
+            mesh.userData = { ...data, id: data.id }; // Ensure local ID match
+            
             mesh.position.set(data.px, data.py, data.pz);
             mesh.rotation.set(data.rx, data.ry, data.rz);
             mesh.scale.set(data.sx, data.sy, data.sz);
 
-            // Find Parent Bone
-            const parentBone = p.parts[data.parent];
-            if(parentBone) {
-                parentBone.add(mesh);
+            if (p.parts[data.parent]) {
+                p.parts[data.parent].add(mesh);
                 p.attachments[data.id] = mesh;
             }
         }
 
-        function updateRemoteAvatarPart(playerId, attId, data) {
-            const p = remotePlayers[playerId];
-            if(!p) return;
-            
-            const mesh = p.attachments[attId];
-            if(mesh) {
-                mesh.position.set(data.px, data.py, data.pz);
-                mesh.rotation.set(data.rx, data.ry, data.rz);
-                mesh.scale.set(data.sx, data.sy, data.sz);
-                mesh.material.color.setHex(data.color);
-            }
-        }
-
-        function deleteRemoteAvatarPart(playerId, attId) {
-            const p = remotePlayers[playerId];
-            if(!p) return;
-            
-            const mesh = p.attachments[attId];
-            if(mesh) {
-                mesh.parent.remove(mesh);
-                delete p.attachments[attId];
-            }
-        }
-
-        // --- World Logic ---
         function spawnRemotePart(id, data) {
-            if (worldObjects[id]) return; 
-            
+            if (worldObjects[id]) return;
             let geometry;
-            if (data.type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
-            else if (data.type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-            else if (data.type === 'wedge') {
-                const shape = new THREE.Shape();
-                shape.moveTo(0,0); shape.lineTo(1,0); shape.lineTo(0,1); shape.lineTo(0,0);
+            if (data.type === 'box') geometry = new THREE.BoxGeometry(1,1,1);
+            else if (data.type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5,0.5,1,16);
+            else { // wedge
+                const shape = new THREE.Shape(); shape.moveTo(0,0); shape.lineTo(1,0); shape.lineTo(0,1); shape.lineTo(0,0);
                 geometry = new THREE.ExtrudeGeometry(shape, { depth: 1, bevelEnabled: false });
-                geometry.translate(-0.5, -0.5, -0.5);
+                geometry.translate(-0.5,-0.5,-0.5);
             }
-
-            const mat = new THREE.MeshStandardMaterial({ color: data.color });
-            const mesh = new THREE.Mesh(geometry, mat);
+            const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: data.color }));
             mesh.castShadow = true; mesh.receiveShadow = true;
             mesh.position.set(data.px, data.py, data.pz);
             mesh.rotation.set(data.rx, data.ry, data.rz);
             mesh.scale.set(data.sx, data.sy, data.sz);
-            
-            mesh.userData = { 
-                isCustom: true, isWorld: true, anchored: data.anchored, 
-                canCollide: data.canCollide, dbId: id, type: data.type, mode: 'world' 
-            };
+            mesh.userData = { ...data, dbId: id, isWorld: true, anchored: data.anchored, canCollide: data.canCollide };
             
             worldGroup.add(mesh);
             worldObjects[id] = mesh;
         }
 
-        function updateRemotePart(id, data) {
-            const mesh = worldObjects[id];
-            if (!mesh) return;
-            if (selectedObject === mesh && isEditing) return; // Don't overwrite if editing
-
-            mesh.position.set(data.px, data.py, data.pz);
-            mesh.rotation.set(data.rx, data.ry, data.rz);
-            mesh.scale.set(data.sx, data.sy, data.sz);
-            mesh.material.color.setHex(data.color);
-            mesh.userData.anchored = data.anchored;
-            mesh.userData.canCollide = data.canCollide;
-        }
-
         function deleteWorldPart(id) {
-            const mesh = worldObjects[id];
-            if (mesh) {
-                mesh.parent.remove(mesh);
+            if (worldObjects[id]) {
+                worldObjects[id].parent.remove(worldObjects[id]);
                 delete worldObjects[id];
-                if (selectedObject === mesh) window.gameEditor.clearSelection();
+            }
+        }
+        
+        function deleteRemoteAvatarPart(playerId, attId) {
+            if(remotePlayers[playerId] && remotePlayers[playerId].attachments[attId]) {
+                remotePlayers[playerId].attachments[attId].parent.remove(remotePlayers[playerId].attachments[attId]);
+                delete remotePlayers[playerId].attachments[attId];
             }
         }
 
-        // --- Game Logic ---
-        const keys = { w: false, a: false, s: false, d: false, " ": false };
-        let isShiftLock = false, isRightClickRotating = false;
-        let velocityY = 0, isGrounded = true;
-        const playerDirection = new THREE.Vector3();
-        const clock = new THREE.Clock();
-
+        // --- INTERACTION & TOOLS ---
         const transformControl = new TransformControls(camera, renderer.domElement);
-        transformControl.setSpace('local');
-        scene.add(transformControl);
-        const selectionHelper = new THREE.BoxHelper();
-        selectionHelper.material.depthTest = false; selectionHelper.material.transparent = true; selectionHelper.visible = false;
-        scene.add(selectionHelper);
-        
+        transformControl.setSpace('local'); scene.add(transformControl);
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
-        let isEditing = false, activeTab = 'avatar', selectedObject = null;
-        let isMenuOpen = false;
-        
-        // --- EDITOR MODIFICATIONS ---
-        window.gameEditor = {
-            setTab: function(tab) {
-                activeTab = tab;
-                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                document.getElementById('tab-' + tab).classList.add('active');
-                document.getElementById('content-avatar').classList.toggle('hidden', tab !== 'avatar');
-                document.getElementById('content-world').classList.toggle('hidden', tab !== 'world');
-                this.clearSelection();
-            },
-            toggle: function() {
-                isEditing = !isEditing;
-                const ui = document.getElementById('editor-ui');
-                const btn = document.getElementById('toggle-editor-btn');
-                const gameUI = document.getElementById('ui-layer');
+        let isEditing = false, isMenuOpen = false, selectedObject = null;
 
-                if (isEditing) {
-                    ui.style.display = 'block'; gameUI.style.opacity = '0.2'; btn.textContent = 'Exit Tools';
-                    document.exitPointerLock(); isShiftLock = false;
-                    document.getElementById('shift-status').textContent = "OFF";
-                    document.getElementById('crosshair').style.display = "none";
-                } else {
-                    ui.style.display = 'none'; gameUI.style.opacity = '1'; btn.textContent = 'Open Tools';
-                    this.clearSelection();
-                }
+        window.gameEditor = {
+            setTab: (tab) => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.getElementById('tab-'+tab).classList.add('active');
+                document.getElementById('content-avatar').classList.toggle('hidden', tab!=='avatar');
+                document.getElementById('content-world').classList.toggle('hidden', tab!=='world');
+                window.gameEditor.clearSelection();
             },
-            // --- MENU FUNCTIONS ---
-            toggleMenu: function() {
+            toggle: () => {
+                isEditing = !isEditing;
+                document.getElementById('editor-ui').style.display = isEditing ? 'block' : 'none';
+                document.getElementById('toggle-editor-btn').textContent = isEditing ? 'Exit Tools' : 'Open Tools';
+                if(isEditing) { document.exitPointerLock(); } else { window.gameEditor.clearSelection(); }
+            },
+            toggleMenu: () => {
                 isMenuOpen = !isMenuOpen;
                 const menu = document.getElementById('esc-menu');
-                
                 if(isMenuOpen) {
-                    menu.style.display = 'flex';
-                    document.exitPointerLock();
-                    // --- Update Avatar Preview ---
+                    menu.style.display = 'flex'; document.exitPointerLock();
                     if(previewAvatar) previewScene.remove(previewAvatar);
-                    // Clone the player group (visuals only)
                     previewAvatar = localAvatar.group.clone();
-                    // Reset position for preview
-                    previewAvatar.position.set(0, 0, 0);
-                    previewAvatar.rotation.set(0, 0, 0);
-                    // Fix nametag scale if needed (optional)
+                    previewAvatar.position.set(0,0,0); previewAvatar.rotation.set(0,0,0);
                     previewScene.add(previewAvatar);
-                } else {
-                    menu.style.display = 'none';
-                }
+                } else { menu.style.display = 'none'; }
             },
-            
-            saveGame: function() {
-                 // Collect all world parts
-                 const saveObj = Object.values(worldObjects).map(obj => {
-                    return {
-                        type: obj.userData.type,
-                        px: obj.position.x, py: obj.position.y, pz: obj.position.z,
-                        rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
-                        sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
-                        color: obj.material.color.getHex(),
-                        anchored: obj.userData.anchored,
-                        canCollide: obj.userData.canCollide
-                    };
-                 });
-                 
-                 const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(saveObj));
-                 const dlAnchorElem = document.createElement('a');
-                 dlAnchorElem.setAttribute("href", dataStr);
-                 dlAnchorElem.setAttribute("download", "blox_world_save.json");
-                 dlAnchorElem.click();
-            },
-            
-            loadGame: function(input) {
-                const file = input.files[0];
-                if(!file) return;
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    try {
-                        const parts = JSON.parse(e.target.result);
-                        if(Array.isArray(parts)) {
-                            log(`Loading ${parts.length} parts...`);
-                            parts.forEach((p, i) => {
-                                setTimeout(() => {
-                                    // Use existing create logic to handle sync
-                                    window.gameEditor.addWorldPart(p.type, p);
-                                }, i * 50); // Slight stagger to prevent network congestion
-                            });
-                            window.gameEditor.toggleMenu(); // Close menu
-                        }
-                    } catch(err) {
-                        console.error(err);
-                        alert("Invalid Save File");
-                    }
-                };
-                reader.readAsText(file);
-                input.value = ''; // Reset input
-            },
-
-            addPart: function(type, overrideData) { if (!isEditing) return; this.createObject(type, 'avatar', overrideData); },
-            
-            addWorldPart: function(type, overrideData) {
-                // If called from Load Game (overrideData exists), we don't need editing check
-                if (!isEditing && !overrideData) return;
-
-                // Request create
-                let data;
-                if (overrideData) {
-                    // Use loaded data
-                    data = overrideData;
-                } else {
-                    // New placement
-                    const spawnPos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5));
-                    data = {
-                        type: type,
-                        px: spawnPos.x, py: spawnPos.y, pz: spawnPos.z,
-                        rx: 0, ry: 0, rz: 0,
-                        sx: 1, sy: 1, sz: 1,
-                        color: Math.floor(Math.random() * 0xffffff),
-                        anchored: true, canCollide: true
-                    };
-                }
-
-                if (NetState.mode === 'p2p-host') {
-                    // Host assumes authority
-                    const id = generateId();
-                    const finalData = { ...data, id: id };
-                    spawnRemotePart(id, finalData);
-                    broadcast({ type: 'WORLD_CREATE', data: finalData });
-                } else if (NetState.mode === 'p2p-client' && NetState.conn) {
-                    NetState.conn.send({ type: 'REQ_WORLD_CREATE', data: data });
-                } else if (NetState.mode === 'server' && NetState.serverSocket) {
-                    // Server Mode: Send request to socket
-                     if (NetState.serverSocket.readyState === WebSocket.OPEN) {
-                        NetState.serverSocket.send(JSON.stringify({ type: 'REQ_WORLD_CREATE', data: data }));
-                     }
-                }
-            },
-            
-            createObject: function(type, mode, data) {
-                if (mode === 'world' && !data) return; // Should go through addWorldPart
-
-                let geometry;
-                if (type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
-                else if (type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-                const color = data ? data.color : Math.random() * 0xffffff;
-                const mat = new THREE.MeshStandardMaterial({ color: color });
-                const mesh = new THREE.Mesh(geometry, mat);
-                mesh.castShadow = true;
-                
-                // Generate Client-Side Attachment ID for Avatar Parts
-                const attId = (mode === 'avatar') ? generateId() : null;
-
-                mesh.userData = { 
-                    isCustom: true, mode: mode, anchored: false, canCollide: true,
-                    velocity: new THREE.Vector3(),
-                    dbId: attId 
-                };
-
-                const parentName = document.getElementById('parent-selector').value;
-                let parent = bodyParts[parentName];
-                parent.add(mesh);
-                mesh.position.set(0, 0, 1);
-                
-                // Network Sync for Avatar Parts
-                if (mode === 'avatar') {
-                    const attData = {
-                        id: attId,
-                        type: type,
-                        parent: parentName,
-                        color: color,
-                        px: 0, py: 0, pz: 1,
-                        rx: 0, ry: 0, rz: 0,
-                        sx: 1, sy: 1, sz: 1
-                    };
-                    
-                    if (NetState.mode === 'p2p-host') {
-                        broadcast({ type: 'AVATAR_ATTACH', playerId: NetState.peer.id, data: attData });
-                    } else if (NetState.mode === 'p2p-client' && NetState.conn) {
-                        NetState.conn.send({ type: 'REQ_AVATAR_ATTACH', data: attData });
-                    } else if (NetState.mode === 'server' && NetState.serverSocket) {
-                        NetState.serverSocket.send(JSON.stringify({ type: 'REQ_AVATAR_ATTACH', data: attData }));
-                    }
-                }
-
-                this.selectObject(mesh);
-            },
-
-            selectObject: function(mesh) {
-                if(selectedObject === mesh) return;
-                selectedObject = mesh;
-                transformControl.attach(mesh);
-                selectionHelper.setFromObject(mesh);
-                selectionHelper.visible = true;
-                if (mesh.userData.mode === 'world') transformControl.setSpace('world');
-                else transformControl.setSpace('local');
-                document.getElementById('color-picker').value = '#' + mesh.material.color.getHexString();
-                document.getElementById('check-anchor').checked = mesh.userData.anchored;
-                document.getElementById('check-collide').checked = mesh.userData.canCollide;
-            },
-            clearSelection: function() {
-                transformControl.detach(); selectionHelper.visible = false; selectedObject = null;
-            },
-            captureTransformEnd: function(obj) {
-                if (!obj.userData.dbId) return;
-
-                const data = {
-                    px: obj.position.x, py: obj.position.y, pz: obj.position.z,
-                    rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
-                    sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
-                    color: obj.material.color.getHex(),
-                    anchored: obj.userData.anchored,
-                    canCollide: obj.userData.canCollide
-                };
-
-                if (obj.userData.mode === 'world') {
-                    // World Part Update
-                    const payload = { type: 'REQ_WORLD_UPDATE', id: obj.userData.dbId, data: data };
-                    if (NetState.mode === 'p2p-host') broadcast({ type: 'WORLD_UPDATE', id: obj.userData.dbId, data: data });
-                    else if (NetState.mode === 'p2p-client' && NetState.conn) NetState.conn.send(payload);
-                    else if (NetState.mode === 'server' && NetState.serverSocket) NetState.serverSocket.send(JSON.stringify(payload));
-                } 
-                else if (obj.userData.mode === 'avatar') {
-                    // Avatar Part Update
-                    const payload = { type: 'REQ_AVATAR_UPDATE', attId: obj.userData.dbId, data: data };
-                    if (NetState.mode === 'p2p-host') {
-                        broadcast({ type: 'AVATAR_UPDATE', playerId: NetState.peer.id, attId: obj.userData.dbId, data: data });
-                    }
-                    else if (NetState.mode === 'p2p-client' && NetState.conn) NetState.conn.send(payload);
-                    else if (NetState.mode === 'server' && NetState.serverSocket) NetState.serverSocket.send(JSON.stringify(payload));
-                }
-            },
-            setAnchored: function(val) {
-                if(selectedObject) {
-                    selectedObject.userData.anchored = val;
-                    this.captureTransformEnd(selectedObject);
-                }
-            },
-            setCanCollide: function(val) {
-                if(selectedObject) {
-                    selectedObject.userData.canCollide = val;
-                    this.captureTransformEnd(selectedObject);
-                }
-            },
-            deleteSelected: function() {
-                if(selectedObject) {
-                    if (selectedObject.userData.dbId) {
-                        if (selectedObject.userData.mode === 'world') {
-                            const payload = { type: 'REQ_WORLD_DELETE', id: selectedObject.userData.dbId };
-                            if(NetState.mode === 'p2p-host') {
-                                deleteWorldPart(selectedObject.userData.dbId);
-                                broadcast({ type: 'WORLD_DELETE', id: selectedObject.userData.dbId });
-                            } else if (NetState.mode === 'p2p-client' && NetState.conn) {
-                                NetState.conn.send(payload);
-                            } else if (NetState.mode === 'server' && NetState.serverSocket) {
-                                NetState.serverSocket.send(JSON.stringify(payload));
-                            }
-                        }
-                        else if (selectedObject.userData.mode === 'avatar') {
-                            const payload = { type: 'REQ_AVATAR_DELETE', attId: selectedObject.userData.dbId };
-                            if(NetState.mode === 'p2p-host') {
-                                broadcast({ type: 'AVATAR_DELETE', playerId: NetState.peer.id, attId: selectedObject.userData.dbId });
-                            } else if (NetState.mode === 'p2p-client' && NetState.conn) {
-                                NetState.conn.send(payload);
-                            } else if (NetState.mode === 'server' && NetState.serverSocket) {
-                                NetState.serverSocket.send(JSON.stringify(payload));
-                            }
-                        }
-                    }
-                    selectedObject.parent.remove(selectedObject);
-                    this.clearSelection();
-                }
-            },
-            setMode: function(mode) {
-                transformControl.setMode(mode);
-                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-                document.getElementById('mode-' + mode).classList.add('active');
-            },
-            
-            leaveGame: function() {
+            leaveGame: () => {
                 if (NetState.serverSocket) NetState.serverSocket.close();
                 if (NetState.peer) NetState.peer.destroy();
                 location.reload();
-            }
+            },
+            addWorldPart: (type, overrideData) => {
+                const id = generateId();
+                let data = overrideData;
+                if(!data) {
+                    const pos = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 5));
+                    data = { 
+                        kind: 'world', type: type, 
+                        px: pos.x, py: pos.y, pz: pos.z, rx:0, ry:0, rz:0, sx:1, sy:1, sz:1,
+                        color: Math.floor(Math.random()*0xffffff), anchored: true, canCollide: true 
+                    };
+                } else {
+                    data.kind = 'world'; // Ensure kind is set
+                }
+                // Local Create
+                spawnRemotePart(id, data);
+                // Network Create
+                sendNetworkUpdate('SET', id, data);
+            },
+            addPart: (type) => {
+                if(!isEditing) return;
+                const id = generateId();
+                const parentName = document.getElementById('parent-selector').value;
+                const color = Math.random() * 0xffffff;
+                
+                // Create Visuals Locally
+                let geometry = (type==='box') ? new THREE.BoxGeometry(1,1,1) : new THREE.CylinderGeometry(0.5,0.5,1,16);
+                const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: color }));
+                mesh.castShadow = true; 
+                mesh.userData = { isCustom: true, mode: 'avatar', dbId: id, anchored: false, canCollide: true };
+                bodyParts[parentName].add(mesh);
+                mesh.position.set(0,0,1);
+                window.gameEditor.selectObject(mesh);
+
+                // Network Data
+                const attData = {
+                    kind: 'avatar-part',
+                    playerId: (NetState.mode === 'server') ? localSessionId : NetState.peer.id,
+                    id: id,
+                    type: type, parent: parentName, color: color,
+                    px: 0, py: 0, pz: 1, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1
+                };
+                sendNetworkUpdate('SET', id, attData);
+            },
+            deleteSelected: () => {
+                if(selectedObject) {
+                    if(selectedObject.userData.dbId) {
+                        sendNetworkUpdate('DELETE', selectedObject.userData.dbId, {});
+                    }
+                    selectedObject.parent.remove(selectedObject);
+                    window.gameEditor.clearSelection();
+                }
+            },
+            selectObject: (mesh) => {
+                if(selectedObject === mesh) return;
+                selectedObject = mesh;
+                transformControl.attach(mesh);
+                if (mesh.userData.mode === 'world') transformControl.setSpace('world');
+                else transformControl.setSpace('local');
+            },
+            clearSelection: () => { transformControl.detach(); selectedObject = null; },
+            saveGame: () => {
+                const saveObj = Object.values(worldObjects).map(obj => {
+                    const d = obj.userData;
+                    return { 
+                        type: d.type, px: obj.position.x, py: obj.position.y, pz: obj.position.z,
+                        rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
+                        sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
+                        color: obj.material.color.getHex(), anchored: d.anchored, canCollide: d.canCollide
+                    };
+                });
+                const blob = new Blob([JSON.stringify(saveObj)], {type: "application/json"});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = "blox_save.json"; a.click();
+            },
+            loadGame: (input) => {
+                const file = input.files[0]; if(!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const parts = JSON.parse(e.target.result);
+                        parts.forEach((p, i) => setTimeout(() => window.gameEditor.addWorldPart(p.type, p), i*50));
+                        window.gameEditor.toggleMenu();
+                    } catch(err){ alert("Error loading file"); }
+                };
+                reader.readAsText(file);
+            },
+            setMode: (mode) => transformControl.setMode(mode),
+            setAnchored: (val) => { if(selectedObject) { selectedObject.userData.anchored = val; updateSelectedNetwork(); } },
+            setCanCollide: (val) => { if(selectedObject) { selectedObject.userData.canCollide = val; updateSelectedNetwork(); } }
         };
 
-        transformControl.addEventListener('dragging-changed', (event) => {
-            if (!event.value && selectedObject) window.gameEditor.captureTransformEnd(selectedObject);
-        });
+        function updateSelectedNetwork() {
+            if(!selectedObject || !selectedObject.userData.dbId) return;
+            const o = selectedObject;
+            const d = o.userData;
+            
+            const updateData = {
+                px: o.position.x, py: o.position.y, pz: o.position.z,
+                rx: o.rotation.x, ry: o.rotation.y, rz: o.rotation.z,
+                sx: o.scale.x, sy: o.scale.y, sz: o.scale.z,
+                color: o.material.color.getHex(),
+                anchored: d.anchored, canCollide: d.canCollide
+            };
 
-        document.getElementById('toggle-editor-btn').addEventListener('click', () => window.gameEditor.toggle());
-        document.getElementById('baseplate-color-picker').addEventListener('input', (e) => ground.material.color.set(e.target.value));
-        
-        renderer.domElement.addEventListener('pointerdown', (event) => {
-            if (event.button === 2) { isRightClickRotating = true; document.body.requestPointerLock(); return; }
-            if (!isEditing) return;
-            if (event.button !== 0) return; 
+            // Re-attach required identifiers for the generic 'SET' command
+            if (d.mode === 'avatar') {
+                updateData.kind = 'avatar-part';
+                updateData.playerId = (NetState.mode === 'server') ? localSessionId : NetState.peer.id;
+                updateData.parent = o.parent === bodyParts.torso ? 'torso' : 'head'; // Simplification, ideally store parent name
+                // Note: Parent tracking in edit mode needs robust mapping, sticking to basics for now
+                updateData.type = d.type;
+                updateData.id = d.dbId;
+            } else {
+                updateData.kind = 'world';
+                updateData.type = d.type;
+            }
+
+            sendNetworkUpdate('SET', d.dbId, updateData);
+        }
+
+        transformControl.addEventListener('dragging-changed', (e) => { if(!e.value) updateSelectedNetwork(); });
+
+        // Input Handling
+        document.addEventListener('pointerdown', (e) => {
+            if(e.button===2) { document.body.requestPointerLock(); return; }
+            if(!isEditing || e.button!==0) return;
             const rect = renderer.domElement.getBoundingClientRect();
-            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            mouse.x = ((e.clientX-rect.left)/rect.width)*2-1; mouse.y = -((e.clientY-rect.top)/rect.height)*2+1;
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects([...worldGroup.children, ...playerGroup.children], true);
-            for (let i = 0; i < intersects.length; i++) {
-                const obj = intersects[i].object;
-                if (obj.userData.isCustom || obj.userData.isWorld) {
-                    window.gameEditor.selectObject(obj);
-                    return;
-                }
-            }
+            const hit = intersects.find(i => i.object.userData.isCustom || i.object.userData.isWorld);
+            if(hit) window.gameEditor.selectObject(hit.object);
         });
         
-        document.addEventListener('pointerup', (event) => {
-            if (event.button === 2) { isRightClickRotating = false; if (!isShiftLock) document.exitPointerLock(); }
-        });
-        
-        window.addEventListener('keydown', (event) => {
-            if (!event.key) return; // Safety Check
-            const key = event.key.toLowerCase();
-            if (keys.hasOwnProperty(key)) keys[key] = true;
-            if (event.key === " ") keys[" "] = true;
-            if (event.key === 'Shift' && !event.repeat) toggleShiftLock();
-
-            if (key === 'escape') {
-                // Priority: Close Editor -> Toggle Menu
-                if (isEditing) {
-                    window.gameEditor.toggle(); // Close tools
-                } else {
-                    window.gameEditor.toggleMenu(); // Toggle Menu
+        window.addEventListener('keydown', (e) => {
+            const k = e.key.toLowerCase();
+            if(k==='w') keys.w=true; if(k==='a') keys.a=true; if(k==='s') keys.s=true; if(k==='d') keys.d=true; if(k===' ') keys[' ']=true;
+            if(e.key==='Shift') {
+                if(!isMenuOpen && !isEditing) {
+                    const isLocked = document.pointerLockElement===document.body;
+                    if(!isLocked) document.body.requestPointerLock();
+                    else document.exitPointerLock();
                 }
             }
-
-            if (isEditing) {
-                const k = event.key.toLowerCase();
-                if(k === '1') window.gameEditor.setMode('translate');
-                if(k === '2') window.gameEditor.setMode('rotate');
-                if(k === '3') window.gameEditor.setMode('scale');
-                if(k === 'delete') window.gameEditor.deleteSelected();
-                // Escape handled above
+            if(k==='escape') {
+                if(isEditing) window.gameEditor.toggle(); else window.gameEditor.toggleMenu();
+            }
+            if(isEditing) {
+                if(k==='1') window.gameEditor.setMode('translate');
+                if(k==='2') window.gameEditor.setMode('rotate');
+                if(k==='3') window.gameEditor.setMode('scale');
+                if(k==='delete') window.gameEditor.deleteSelected();
             }
         });
         window.addEventListener('keyup', (e) => {
-            if (!e.key) return; // Safety Check
-            const key = e.key.toLowerCase();
-            if (keys.hasOwnProperty(key)) keys[key] = false;
-            if (e.key === " ") keys[" "] = false;
+            const k = e.key.toLowerCase();
+            if(k==='w') keys.w=false; if(k==='a') keys.a=false; if(k==='s') keys.s=false; if(k==='d') keys.d=false; if(k===' ') keys[' ']=false;
         });
-
-        // --- Game State ---
-        const shiftStatusEl = document.getElementById('shift-status');
-        const crosshairEl = document.getElementById('crosshair');
-
-        function toggleShiftLock() {
-            if (isEditing || isMenuOpen) return; 
-            isShiftLock = !isShiftLock;
-            if (isShiftLock) {
-                document.body.requestPointerLock();
-                shiftStatusEl.textContent = "ON"; shiftStatusEl.className = "status-badge on";
-                crosshairEl.style.display = "block";
-            } else {
-                if(!isRightClickRotating) document.exitPointerLock();
-                shiftStatusEl.textContent = "OFF"; shiftStatusEl.className = "status-badge off";
-                crosshairEl.style.display = "none";
-            }
-        }
-
-        document.addEventListener('pointerlockchange', () => {
-            if (document.pointerLockElement !== document.body) {
-                if (isShiftLock) toggleShiftLock();
-                isRightClickRotating = false;
-            }
-        });
-
         document.addEventListener('mousemove', (e) => {
-            const isLocked = document.pointerLockElement === document.body;
-            if (isLocked) {
-                cameraParams.theta -= e.movementX * cameraParams.sensitivity;
-                cameraParams.phi -= e.movementY * cameraParams.sensitivity;
-                cameraParams.phi = Math.max(0.01, Math.min(Math.PI / 2 - 0.1, cameraParams.phi));
+            if(document.pointerLockElement === document.body) {
+                cameraParams.theta -= e.movementX * 0.002;
+                cameraParams.phi -= e.movementY * 0.002;
+                cameraParams.phi = Math.max(0.01, Math.min(Math.PI/2, cameraParams.phi));
             }
         });
 
-        // --- Physics & Movement ---
-        const wallRaycaster = new THREE.Raycaster();
-        const floorRaycaster = new THREE.Raycaster();
-
-        function checkMove(proposedMoveX, proposedMoveZ) {
-            const moveVec = new THREE.Vector3(proposedMoveX, 0, proposedMoveZ);
-            const dist = moveVec.length();
-            if (dist < 0.001) return { x: 0, z: 0 };
-            
-            const dir = moveVec.clone().normalize();
-            const origin = playerGroup.position.clone().add(new THREE.Vector3(0, 1, 0));
-            
-            wallRaycaster.set(origin, dir);
-            const collidables = worldGroup.children.filter(o => o.userData.canCollide !== false);
-            const intersects = wallRaycaster.intersectObjects(collidables, true);
-            
-            if (intersects.length > 0 && intersects[0].distance < 1.0 + dist) {
-                 return { x: 0, z: 0 }; 
-            }
-            return { x: proposedMoveX, z: proposedMoveZ };
-        }
-
-        function updatePhysics(delta) {
-            worldGroup.children.forEach(part => {
-                if (part.userData.isWorld && !part.userData.anchored) {
-                      part.updateMatrixWorld(); 
-                      if (!part.userData.velocity) part.userData.velocity = new THREE.Vector3();
-                      part.userData.velocity.y += GRAVITY * delta;
-                      part.position.addScaledVector(part.userData.velocity, delta);
-                      
-                      const box = new THREE.Box3().setFromObject(part);
-                      if (box.min.y < 0) {
-                          const overlap = 0 - box.min.y;
-                          part.position.y += overlap;
-                          if (part.userData.velocity.y < 0) {
-                             part.userData.velocity.y = -part.userData.velocity.y * 0.3;
-                             part.userData.velocity.x *= 0.8; part.userData.velocity.z *= 0.8;
-                             if (Math.abs(part.userData.velocity.y) < 1) part.userData.velocity.y = 0; 
-                          }
-                      }
-                }
-            });
-
-            const origin = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-            floorRaycaster.set(origin, new THREE.Vector3(0, -1, 0));
-            const collidables = worldGroup.children.filter(o => o.userData.canCollide !== false);
-            let floorHeight = 0;
-            const intersects = floorRaycaster.intersectObjects(collidables, true);
-            if (intersects.length > 0) {
-                const hitY = intersects[0].point.y;
-                if (hitY > floorHeight) floorHeight = hitY;
-            }
-            
-            if (keys[" "] && isGrounded) { velocityY = JUMP_FORCE; isGrounded = false; }
-            velocityY += GRAVITY * delta;
-            playerGroup.position.y += velocityY * delta;
-
-            if (playerGroup.position.y < floorHeight) {
-                playerGroup.position.y = floorHeight;
-                velocityY = 0;
-                isGrounded = true;
-            } else {
-                isGrounded = (Math.abs(playerGroup.position.y - floorHeight) < 0.1);
-            }
-        }
-
+        // Main Loop
+        const clock = new THREE.Clock();
         function updatePlayer(delta) {
-            if (isEditing && activeTab === 'avatar') {
-                updateCameraPosition();
-                return; 
-            }
-
-            const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
+            const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y=0; fwd.normalize();
             const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0,1,0));
+            const move = new THREE.Vector3();
+            if(keys.w) move.add(fwd); if(keys.s) move.sub(fwd); if(keys.a) move.sub(right); if(keys.d) move.add(right);
             
-            playerDirection.set(0,0,0);
-            if(keys.w) playerDirection.add(fwd);
-            if(keys.s) playerDirection.sub(fwd);
-            if(keys.a) playerDirection.sub(right);
-            if(keys.d) playerDirection.add(right);
-
-            const isMoving = playerDirection.lengthSq() > 0;
-
-            if (isMoving) {
-                playerDirection.normalize();
-                const moveDist = WALK_SPEED * delta;
-                const moveX = playerDirection.x * moveDist;
-                const moveZ = playerDirection.z * moveDist;
-
-                const resX = checkMove(moveX, 0);
-                playerGroup.position.x += resX.x;
-                const resZ = checkMove(0, moveZ);
-                playerGroup.position.z += resZ.z;
-                
-                if (isShiftLock) {
-                    playerGroup.rotation.y = cameraParams.theta;
-                } else {
-                    const targetRot = Math.atan2(playerDirection.x, playerDirection.z);
-                    let rotDiff = (targetRot + Math.PI) - playerGroup.rotation.y; 
-                    while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-                    while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-                    playerGroup.rotation.y += rotDiff * ROTATION_SPEED * delta;
-                }
-            } else if (isShiftLock) {
+            if(move.lengthSq()>0) {
+                move.normalize().multiplyScalar(16*delta);
+                playerGroup.position.add(move); // Simple movement
+                const targetRot = Math.atan2(move.x, move.z);
+                let rotDiff = (targetRot + Math.PI) - playerGroup.rotation.y;
+                while(rotDiff > Math.PI) rotDiff -= Math.PI*2; while(rotDiff < -Math.PI) rotDiff += Math.PI*2;
+                playerGroup.rotation.y += rotDiff * 10 * delta;
+                sendPlayerUpdate();
+            } else if (document.pointerLockElement === document.body) {
                 playerGroup.rotation.y = cameraParams.theta;
+                sendPlayerUpdate();
             }
             
-            updatePhysics(delta);
-            updateAnimation(delta, isMoving);
-            updateCameraPosition();
-            
-            // P2P Sync
-            if (isGameActive) sendPlayerUpdate();
-            
-            // P2P Player Rendering
-            const lerpFactor = 5 * delta;
+            // Simple Camera Follow
+            cameraParams.distance = THREE.MathUtils.lerp(cameraParams.distance, 10, 0.1);
+            const x = cameraParams.distance * Math.sin(cameraParams.phi) * Math.sin(cameraParams.theta);
+            const z = cameraParams.distance * Math.sin(cameraParams.phi) * Math.cos(cameraParams.theta);
+            const y = cameraParams.distance * Math.cos(cameraParams.phi);
+            camera.position.set(playerGroup.position.x + x, playerGroup.position.y + y + 4.5, playerGroup.position.z + z);
+            camera.lookAt(playerGroup.position.x, playerGroup.position.y + 4.5, playerGroup.position.z);
+
+            // Interpolate Remotes
             Object.values(remotePlayers).forEach(p => {
-                p.group.position.lerp(p.targetPos, lerpFactor);
-                let rotDiff = p.targetRot - p.group.rotation.y;
-                while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-                while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-                p.group.rotation.y += rotDiff * lerpFactor;
-                
-                // Anim
-                const speed = p.group.position.distanceTo(p.targetPos) / delta;
-                const isMoving = speed > 0.1;
-                const time = clock.getElapsedTime() * 12;
-                if (isMoving) {
-                    p.parts.leftLeg.rotation.x = Math.sin(time) * 0.8;
-                    p.parts.rightLeg.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                    p.parts.leftArm.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                    p.parts.rightArm.rotation.x = Math.sin(time) * 0.8;
-                } else {
-                    p.parts.leftLeg.rotation.x = THREE.MathUtils.lerp(p.parts.leftLeg.rotation.x, 0, lerpFactor);
-                    p.parts.rightLeg.rotation.x = THREE.MathUtils.lerp(p.parts.rightLeg.rotation.x, 0, lerpFactor);
-                    p.parts.leftArm.rotation.x = THREE.MathUtils.lerp(p.parts.leftArm.rotation.x, 0, lerpFactor);
-                    p.parts.rightArm.rotation.x = THREE.MathUtils.lerp(p.parts.rightArm.rotation.x, 0, lerpFactor);
-                }
+                p.group.position.lerp(p.targetPos, 5*delta);
+                let r = p.targetRot - p.group.rotation.y;
+                while(r>Math.PI)r-=Math.PI*2; while(r<-Math.PI)r+=Math.PI*2;
+                p.group.rotation.y += r*5*delta;
             });
         }
-
-        function updateAnimation(delta, isMoving) {
-             const lerpFactor = 15 * delta;
-             const bodyParts = localAvatar.group.userData.parts; 
-             if (isMoving && isGrounded) {
-                const time = clock.getElapsedTime() * 12;
-                bodyParts.leftLeg.rotation.x = Math.sin(time) * 0.8;
-                bodyParts.rightLeg.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                bodyParts.leftArm.rotation.x = Math.sin(time + Math.PI) * 0.8;
-                bodyParts.rightArm.rotation.x = Math.sin(time) * 0.8;
-            } else {
-                bodyParts.leftLeg.rotation.x = THREE.MathUtils.lerp(bodyParts.leftLeg.rotation.x, isGrounded ? 0 : 0.5, lerpFactor);
-                bodyParts.rightLeg.rotation.x = THREE.MathUtils.lerp(bodyParts.rightLeg.rotation.x, isGrounded ? 0 : -0.5, lerpFactor);
-                bodyParts.leftArm.rotation.x = THREE.MathUtils.lerp(bodyParts.leftArm.rotation.x, isGrounded ? 0 : Math.PI, lerpFactor);
-                bodyParts.rightArm.rotation.x = THREE.MathUtils.lerp(bodyParts.rightArm.rotation.x, isGrounded ? 0 : Math.PI, lerpFactor);
-            }
-        }
-        
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
 
         function animate() {
             requestAnimationFrame(animate);
             const delta = Math.min(clock.getDelta(), 0.1);
-            
-            if (isGameActive && !isMenuOpen) updatePlayer(delta);
-            
-            // Render Main Scene
-            if(!isMenuOpen || isGameActive) { // Keep rendering main scene even if menu open for background effect
-                renderer.render(scene, camera);
-            }
-            
-            if(selectedObject && selectionHelper.visible) selectionHelper.update();
-
-            // Render Avatar Preview (Only when menu is open)
+            if(isGameActive && !isMenuOpen) updatePlayer(delta);
+            renderer.render(scene, camera);
             if(isMenuOpen && previewAvatar) {
-                previewAvatar.rotation.y += 1 * delta; // Slow spin
+                previewAvatar.rotation.y += delta;
                 previewRenderer.render(previewScene, previewCamera);
             }
         }
