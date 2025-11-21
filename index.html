@@ -417,6 +417,15 @@
                     log(`Connected! Found ${data.players.length} players and ${data.world.length} objects.`);
                     data.players.forEach(p => updateRemotePlayer(p.id, p));
                     data.world.forEach(w => spawnRemotePart(w.id, w));
+                    
+                    // NEW: Load attachments for existing players
+                    data.players.forEach(p => {
+                        if(p.attachments) {
+                            Object.values(p.attachments).forEach(att => {
+                                attachToRemoteAvatar(p.id, att);
+                            });
+                        }
+                    });
                     break;
                     
                 case 'PLAYER_UPDATE':
@@ -435,6 +444,7 @@
                     removeRemotePlayer(data.id);
                     break;
                     
+                // --- WORLD EVENTS ---
                 case 'REQ_WORLD_CREATE':
                     if (NetState.isHost) {
                         // Host creates the object and broadcasts
@@ -471,6 +481,22 @@
 
                 case 'WORLD_DELETE':
                     deleteWorldPart(data.id);
+                    break;
+
+                // --- AVATAR EVENTS ---
+                case 'AVATAR_ATTACH':
+                    // Someone added an attachment
+                    attachToRemoteAvatar(data.playerId, data.data);
+                    break;
+
+                case 'AVATAR_UPDATE':
+                    // Someone edited an attachment
+                    updateRemoteAvatarPart(data.playerId, data.attId, data.data);
+                    break;
+
+                case 'AVATAR_DELETE':
+                    // Someone deleted an attachment
+                    deleteRemoteAvatarPart(data.playerId, data.attId);
                     break;
             }
         }
@@ -520,8 +546,13 @@
                     const players = Object.values(remotePlayers).map(p => ({
                         id: p.id, x: p.group.position.x, y: p.group.position.y, z: p.group.position.z, 
                         rot: p.group.rotation.y, name: p.currentName
+                        // NOTE: Local attachments are stored in `players[...].attachments` on server if using server mode.
+                        // If P2P, we need to manually send our attachments.
+                        // For this demo, simpler: client sends their full attachment list on connect?
+                        // Or simpler: Host gathers state. 
                     }));
-                    // Include Host
+                    
+                    // Include Host in players list
                     players.push({
                         id: NetState.peer.id, x: playerGroup.position.x, y: playerGroup.position.y, z: playerGroup.position.z,
                         rot: playerGroup.rotation.y, name: localPlayerName
@@ -871,7 +902,14 @@
         const bodyParts = localAvatar.group.userData.parts; 
         
         // --- Network Game Sync ---
+        let lastUpdate = 0;
+        const UPDATE_RATE = 1000 / 15; // 15 times per second (approx 66ms)
+
         function sendPlayerUpdate() {
+            const now = Date.now();
+            if (now - lastUpdate < UPDATE_RATE) return; // Skip if too soon
+            lastUpdate = now;
+
             // Determine proper ID based on mode
             const myId = (NetState.mode === 'server') ? localSessionId : (NetState.peer?.id);
             if (!myId) return; // Not ready
@@ -917,7 +955,8 @@
                     targetPos: new THREE.Vector3(data.x, data.y, data.z),
                     targetRot: data.rot,
                     parts: remote.parts,
-                    currentName: data.name
+                    currentName: data.name,
+                    attachments: {}
                 };
             }
             
@@ -929,6 +968,63 @@
             if (remotePlayers[id]) {
                 remotePlayersGroup.remove(remotePlayers[id].group);
                 delete remotePlayers[id];
+            }
+        }
+
+        // --- AVATAR ATTACHMENT LOGIC (Remote) ---
+        function attachToRemoteAvatar(playerId, data) {
+            // Ignore self based on mode
+            const myId = (NetState.mode === 'server') ? localSessionId : (NetState.peer?.id);
+            if (playerId === myId) return;
+
+            const p = remotePlayers[playerId];
+            if(!p) return;
+
+            if(p.attachments[data.id]) return; // Already exists
+
+            let geometry;
+            if (data.type === 'box') geometry = new THREE.BoxGeometry(1, 1, 1);
+            else if (data.type === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
+            
+            const mat = new THREE.MeshStandardMaterial({ color: data.color });
+            const mesh = new THREE.Mesh(geometry, mat);
+            mesh.castShadow = true;
+            mesh.userData = { ...data, isRemoteAttachment: true };
+
+            // Apply Transform
+            mesh.position.set(data.px, data.py, data.pz);
+            mesh.rotation.set(data.rx, data.ry, data.rz);
+            mesh.scale.set(data.sx, data.sy, data.sz);
+
+            // Find Parent Bone
+            const parentBone = p.parts[data.parent];
+            if(parentBone) {
+                parentBone.add(mesh);
+                p.attachments[data.id] = mesh;
+            }
+        }
+
+        function updateRemoteAvatarPart(playerId, attId, data) {
+            const p = remotePlayers[playerId];
+            if(!p) return;
+            
+            const mesh = p.attachments[attId];
+            if(mesh) {
+                mesh.position.set(data.px, data.py, data.pz);
+                mesh.rotation.set(data.rx, data.ry, data.rz);
+                mesh.scale.set(data.sx, data.sy, data.sz);
+                mesh.material.color.setHex(data.color);
+            }
+        }
+
+        function deleteRemoteAvatarPart(playerId, attId) {
+            const p = remotePlayers[playerId];
+            if(!p) return;
+            
+            const mesh = p.attachments[attId];
+            if(mesh) {
+                mesh.parent.remove(mesh);
+                delete p.attachments[attId];
             }
         }
 
@@ -1149,15 +1245,41 @@
                 const mesh = new THREE.Mesh(geometry, mat);
                 mesh.castShadow = true;
                 
+                // Generate Client-Side Attachment ID for Avatar Parts
+                const attId = (mode === 'avatar') ? generateId() : null;
+
                 mesh.userData = { 
                     isCustom: true, mode: mode, anchored: false, canCollide: true,
-                    velocity: new THREE.Vector3() 
+                    velocity: new THREE.Vector3(),
+                    dbId: attId 
                 };
 
-                let parent = bodyParts[document.getElementById('parent-selector').value];
+                const parentName = document.getElementById('parent-selector').value;
+                let parent = bodyParts[parentName];
                 parent.add(mesh);
                 mesh.position.set(0, 0, 1);
                 
+                // Network Sync for Avatar Parts
+                if (mode === 'avatar') {
+                    const attData = {
+                        id: attId,
+                        type: type,
+                        parent: parentName,
+                        color: color,
+                        px: 0, py: 0, pz: 1,
+                        rx: 0, ry: 0, rz: 0,
+                        sx: 1, sy: 1, sz: 1
+                    };
+                    
+                    if (NetState.mode === 'p2p-host') {
+                        broadcast({ type: 'AVATAR_ATTACH', playerId: NetState.peer.id, data: attData });
+                    } else if (NetState.mode === 'p2p-client' && NetState.conn) {
+                        NetState.conn.send({ type: 'REQ_AVATAR_ATTACH', data: attData });
+                    } else if (NetState.mode === 'server' && NetState.serverSocket) {
+                        NetState.serverSocket.send(JSON.stringify({ type: 'REQ_AVATAR_ATTACH', data: attData }));
+                    }
+                }
+
                 this.selectObject(mesh);
             },
 
@@ -1177,25 +1299,32 @@
                 transformControl.detach(); selectionHelper.visible = false; selectedObject = null;
             },
             captureTransformEnd: function(obj) {
-                if (obj.userData.mode === 'world' && obj.userData.dbId) {
-                    const data = {
-                        px: obj.position.x, py: obj.position.y, pz: obj.position.z,
-                        rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
-                        sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
-                        color: obj.material.color.getHex(),
-                        anchored: obj.userData.anchored,
-                        canCollide: obj.userData.canCollide
-                    };
-                    
-                    const payload = { type: 'REQ_WORLD_UPDATE', id: obj.userData.dbId, data: data };
+                if (!obj.userData.dbId) return;
 
+                const data = {
+                    px: obj.position.x, py: obj.position.y, pz: obj.position.z,
+                    rx: obj.rotation.x, ry: obj.rotation.y, rz: obj.rotation.z,
+                    sx: obj.scale.x, sy: obj.scale.y, sz: obj.scale.z,
+                    color: obj.material.color.getHex(),
+                    anchored: obj.userData.anchored,
+                    canCollide: obj.userData.canCollide
+                };
+
+                if (obj.userData.mode === 'world') {
+                    // World Part Update
+                    const payload = { type: 'REQ_WORLD_UPDATE', id: obj.userData.dbId, data: data };
+                    if (NetState.mode === 'p2p-host') broadcast({ type: 'WORLD_UPDATE', id: obj.userData.dbId, data: data });
+                    else if (NetState.mode === 'p2p-client' && NetState.conn) NetState.conn.send(payload);
+                    else if (NetState.mode === 'server' && NetState.serverSocket) NetState.serverSocket.send(JSON.stringify(payload));
+                } 
+                else if (obj.userData.mode === 'avatar') {
+                    // Avatar Part Update
+                    const payload = { type: 'REQ_AVATAR_UPDATE', attId: obj.userData.dbId, data: data };
                     if (NetState.mode === 'p2p-host') {
-                         broadcast({ type: 'WORLD_UPDATE', id: obj.userData.dbId, data: data });
-                    } else if (NetState.mode === 'p2p-client' && NetState.conn) {
-                         NetState.conn.send(payload);
-                    } else if (NetState.mode === 'server' && NetState.serverSocket) {
-                        NetState.serverSocket.send(JSON.stringify(payload));
+                        broadcast({ type: 'AVATAR_UPDATE', playerId: NetState.peer.id, attId: obj.userData.dbId, data: data });
                     }
+                    else if (NetState.mode === 'p2p-client' && NetState.conn) NetState.conn.send(payload);
+                    else if (NetState.mode === 'server' && NetState.serverSocket) NetState.serverSocket.send(JSON.stringify(payload));
                 }
             },
             setAnchored: function(val) {
@@ -1213,18 +1342,29 @@
             deleteSelected: function() {
                 if(selectedObject) {
                     if (selectedObject.userData.dbId) {
-                        const payload = { type: 'REQ_WORLD_DELETE', id: selectedObject.userData.dbId };
-
-                        if(NetState.mode === 'p2p-host') {
-                            deleteWorldPart(selectedObject.userData.dbId);
-                            broadcast({ type: 'WORLD_DELETE', id: selectedObject.userData.dbId });
-                        } else if (NetState.mode === 'p2p-client' && NetState.conn) {
-                            NetState.conn.send(payload);
-                        } else if (NetState.mode === 'server' && NetState.serverSocket) {
-                             NetState.serverSocket.send(JSON.stringify(payload));
+                        if (selectedObject.userData.mode === 'world') {
+                            const payload = { type: 'REQ_WORLD_DELETE', id: selectedObject.userData.dbId };
+                            if(NetState.mode === 'p2p-host') {
+                                deleteWorldPart(selectedObject.userData.dbId);
+                                broadcast({ type: 'WORLD_DELETE', id: selectedObject.userData.dbId });
+                            } else if (NetState.mode === 'p2p-client' && NetState.conn) {
+                                NetState.conn.send(payload);
+                            } else if (NetState.mode === 'server' && NetState.serverSocket) {
+                                NetState.serverSocket.send(JSON.stringify(payload));
+                            }
+                        }
+                        else if (selectedObject.userData.mode === 'avatar') {
+                            const payload = { type: 'REQ_AVATAR_DELETE', attId: selectedObject.userData.dbId };
+                            if(NetState.mode === 'p2p-host') {
+                                broadcast({ type: 'AVATAR_DELETE', playerId: NetState.peer.id, attId: selectedObject.userData.dbId });
+                            } else if (NetState.mode === 'p2p-client' && NetState.conn) {
+                                NetState.conn.send(payload);
+                            } else if (NetState.mode === 'server' && NetState.serverSocket) {
+                                NetState.serverSocket.send(JSON.stringify(payload));
+                            }
                         }
                     }
-                    else selectedObject.parent.remove(selectedObject);
+                    selectedObject.parent.remove(selectedObject);
                     this.clearSelection();
                 }
             },
